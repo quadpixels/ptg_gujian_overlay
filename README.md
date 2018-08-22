@@ -5,9 +5,7 @@ Prerequisites:
  - Microsoft DirectX SDK (June 2010)
 
 Build notes:
- - Update the VC++ Directories (Project -> Properties -> VC++ Directories) such that
-   "C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\Include", or your DirectX SDK include folder, is in the Include Directories, and
-   "C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\lib\x86", or your DirectX SDK library folder, is in the Library Directories.
+ - Update the VC++ include and library directories (Project -> Properties -> VC++ Directories)
  - Add "d3d9x.lib" to (Project -> Properties -> Linker -> Input -> Additional Dependencies)
  - Update the path to the DEF file at: (Project -> Properties -> Linker -> Input -> Module Definition File)
 
