@@ -1,0 +1,6 @@
+LIBRARY   DLL1
+EXPORTS  
+   Initialize   @1 
+   SetD3DDevicePtr  @2
+   OnPresent    @3
+   SetAudioID   @4
