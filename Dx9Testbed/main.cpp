@@ -59,7 +59,7 @@ void InitD3D(HWND hwnd) {
 typedef void(*Dll1SetD3D9DevicePtr)(void*);
 Dll1SetD3D9DevicePtr g_dll1_setd3d9deviceptr;
 
-typedef void(*Dll1OnPresent)();
+typedef void(*Dll1OnPresent)(IDirect3DDevice9*);
 Dll1OnPresent g_dll1_onpresent;
 
 typedef void(*SetAudioID)(int);
@@ -187,6 +187,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 }
 
 void Render() {
+
   if (g_d3ddev == nullptr) return;
   g_d3ddev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0x33, 0x33, 0x33), 1.0f, 0);
   g_d3ddev->BeginScene();
@@ -212,7 +213,7 @@ void Render() {
 
   // Overlay DLL
   if (g_dll1_onpresent) {
-    g_dll1_onpresent();
+    g_dll1_onpresent(g_d3ddev);
   }
 
   g_d3ddev->EndScene();
