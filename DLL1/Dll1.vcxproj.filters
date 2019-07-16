@@ -24,6 +24,7 @@
     <ClInclude Include="gs_sdk.h">
       <Filter>Source Files</Filter>
     </ClInclude>
+    <ClInclude Include="ClosedCaption.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -32,5 +33,9 @@
     <ClCompile Include="Dll1.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="miniz.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ClosedCaption.cpp" />
   </ItemGroup>
 </Project>
