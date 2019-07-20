@@ -3,6 +3,7 @@
 #include <codecvt>
 #include <d3dx9.h>
 #include <d3d9.h>
+#include "miniz.h"
 
 // in dll1.cpp
 extern std::wstring_convert<std::codecvt_utf8_utf16<wchar_t> > g_converter;
@@ -14,6 +15,8 @@ extern IDirect3DDevice9* g_pD3DDevice;
 
 IDirect3DVertexBuffer9* g_vert_buf;
 IDirect3DStateBlock9* g_pStateBlock;
+
+extern mz_zip_archive g_archive_dialog_aligned;
 
 struct MyD3D9RenderState {
   DWORD alpha_blend_enable, blend_op, blend_op_alpha, src_blend, dest_blend, lighting, cull_mode;
@@ -118,7 +121,7 @@ int ClosedCaption::MOUSE_Y_DELTA = 24;
 
 ClosedCaption::ClosedCaption() {
   visible = true;
-  line_width = 360;
+  line_width = 640;
   visible_height = 16;
   x = 2;
   y = 29;
@@ -253,7 +256,7 @@ void ClosedCaption::Draw() {
 
   // Border?
   {
-    D3DCOLOR bkcolor = D3DCOLOR_ARGB(64, 102, 52, 35), bordercolor = D3DCOLOR_XRGB(255, 255, 255);
+    D3DCOLOR bkcolor = D3DCOLOR_ARGB(128, 102, 52, 35), bordercolor = D3DCOLOR_XRGB(255, 255, 255);
     if (is_dragging && is_hovered) {
       bordercolor = D3DCOLOR_XRGB(255, 32, 32);
     } else if (is_hovered) {
@@ -316,6 +319,10 @@ void ClosedCaption::Draw() {
 
   if (g_hover_messagebox) g_hover_messagebox->Draw();
 
+  for (const RECT& r : highlight_rects) {
+    DrawBorderedRectangle(r.left, r.top, (r.right - r.left), (r.bottom - r.top), D3DCOLOR_ARGB(0, 0, 0, 0), D3DCOLOR_ARGB(255, 32, 255, 32));
+  }
+
   // 恢复先前的渲染状态
   RestoreD3D9RenderState();
 }
@@ -325,8 +332,9 @@ int ClosedCaption::SetAlignmentFileByAudioID(int id) {
   curr_story_idx = id;
   millis2word.clear();
 
+#if 0
   char path[263]; // NTFS limit: 262 chars
-  sprintf_s(path, "%s\\%d_aligned_label.txt", alignment_path.c_str(), id);
+  sprintf_s(path, "%s\\dialog_aligned\\%d_aligned_label.txt", alignment_path.c_str(), id);
   std::ifstream thefile(path);
   if (thefile.good()) {
     ret = true;
@@ -340,8 +348,45 @@ int ClosedCaption::SetAlignmentFileByAudioID(int id) {
     start_millis = MillisecondsNow();
     ComputeBoundingBoxPerChar();
     thefile.close();
+    found = true;
+  }
+#else
+  // 20190716: use zipped file instead of individual files. Much faster!!
+  char path[100];
+  sprintf_s(path, "%d_aligned_label.txt", id);
+  size_t sz;
+  char* buf = (char*)mz_zip_reader_extract_file_to_heap(&g_archive_dialog_aligned, path, &sz, 0);
+  if (buf != nullptr) {
+    printf("[SetAlignmentFileByAudioID] %s = %lu bytes\n", path, sz);
+    std::string line;
+    int idx = 0;
+    while (idx <= sz) {
+      if (idx < sz && buf[idx] != '\n') {
+        line.push_back(buf[idx]);
+      }
+      else if ((idx == sz) || (idx < sz && buf[idx] == '\n')) {
+        std::istringstream is(line);
+        float t0, t1; std::string word;
+        is >> t0 >> t1 >> word;
+        if (word.size() > 0) {
+          millis2word[std::make_pair(t0, t1)] = g_converter.from_bytes(word);
+        }
+        line.clear();
+      }
+      idx++;
+    }
+    delete buf;
+    buf = nullptr;
+    start_millis = MillisecondsNow();
+    ComputeBoundingBoxPerChar();
+    ret = true;
   }
   else {
+    printf("[SetAlignmentFileByAudioID] Cannot find [%s] in zipped file\n", path);
+  }
+#endif
+
+  if (ret != true) {
     printf("[SetAlignmentFileByAudioID] Input file not good, id=%d\n", id);
     ret = -998;
   }
@@ -571,7 +616,7 @@ void MyMessageBox::SetText(const std::wstring& msg, int width_limit) {
 
 void MyMessageBox::Draw() {
   {
-    D3DCOLOR bkcolor = D3DCOLOR_ARGB(64, 102, 52, 35), bordercolor = D3DCOLOR_XRGB(255, 255, 255);
+    D3DCOLOR bkcolor = D3DCOLOR_ARGB(128, 102, 52, 35), bordercolor = D3DCOLOR_XRGB(255, 255, 255);
     DrawBorderedRectangle(x, y, w, h, bkcolor, bordercolor);
   }
 

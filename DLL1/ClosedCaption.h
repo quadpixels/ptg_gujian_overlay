@@ -56,7 +56,7 @@ class ClosedCaption {
     static void SetAlignmentPath() {
       char user_directory[233];
       GetEnvironmentVariableA("USERPROFILE", user_directory, 233);
-      alignment_path = std::string(user_directory) + std::string("\\Downloads\\GuJian Resources\\dialog_aligned");
+      alignment_path = std::string(user_directory) + std::string("\\Downloads\\GuJian Resources\\");
     }
 
     int curr_story_idx;
@@ -81,7 +81,7 @@ class ClosedCaption {
           if (sp.size() >= 3) {
             id = atoi(sp[0].c_str());
             content = sp.back();
-            for (int i = 1; i < sp.size() - 1; i++) {
+            for (int i = 1; i < int(sp.size()) - 1; i++) {
               if (who != "") who += " ";
               who = who + sp[i];
             }
@@ -118,7 +118,7 @@ class ClosedCaption {
             if (sp.size() >= 3) {
               id = atoi(sp[0].c_str());
               content = sp.back();
-              for (int i = 1; i < sp.size() - 1; i++) {
+              for (int i = 1; i < int(sp.size()) - 1; i++) {
                 if (who != "") who += " ";
                 who = who + sp[i];
               }
@@ -154,7 +154,7 @@ class ClosedCaption {
           std::getline(f, line);
           std::vector<std::string> sp;
 
-          for (int i = 0; i < line.size(); i++) {
+          for (int i = 0; i < int(line.size()); i++) {
             if (line[i] == '\t') { // UTF-8里的 \t 也是 0x09
               sp.push_back(x); x = "";
             }
@@ -190,7 +190,7 @@ class ClosedCaption {
       std::string who1 = who, content1 = content;
       while ((content1.size() > 0 && (content1.back() == '\n' || content1.back() == '\r'))) content1.pop_back();
       int idx = 0;
-      while ((idx + 1 < content1.size()) && (content1[idx] == ' ')) idx++;
+      while ((idx + 1 < int(content1.size())) && (content1[idx] == ' ')) idx++;
       content1 = content1.substr(idx);
 
       printf("[ClosedCaption] OnFuncTalk([%s],[%s])\n", who1.c_str(), content1.c_str());
@@ -301,6 +301,10 @@ class ClosedCaption {
 
     bool IsDragging() { return is_dragging; }
 
+    void AppendHighlightRect(RECT x) { highlight_rects.push_back(x); }
+
+    void ClearHighlightRect() { highlight_rects.clear(); }
+
   private:
     bool visible;
     bool is_hovered, is_dragging;
@@ -310,6 +314,7 @@ class ClosedCaption {
     int x, y;
     int mouse_x_start_drag, mouse_y_start_drag;
     int x_start_drag, y_start_drag;
+    std::vector<RECT> highlight_rects;
 
     int GetVisibleWidth() { return this->line_width; }
     int GetVisibleHeight() { return this->visible_height; }
