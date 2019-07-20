@@ -7,5 +7,6 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LocalDebuggerCommand>"C:\Program Files (x86)\Aurogon\GuJian\Bin\GuJian.exe"</LocalDebuggerCommand>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+    <LocalDebuggerWorkingDirectory>$(SolutionDir)\Release</LocalDebuggerWorkingDirectory>
   </PropertyGroup>
 </Project>
