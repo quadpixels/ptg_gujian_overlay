@@ -15,7 +15,6 @@ extern IDirect3DDevice9* g_pD3DDevice;
 
 IDirect3DVertexBuffer9* g_vert_buf;
 IDirect3DStateBlock9* g_pStateBlock;
-
 extern mz_zip_archive g_archive_dialog_aligned;
 
 struct MyD3D9RenderState {
@@ -282,7 +281,6 @@ void ClosedCaption::Draw() {
     g_font->DrawTextW(NULL, msg.c_str(), msg.size(), &rect_header, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
 
     // Draw full text
-    // TODO: 画出高亮的专有名词
     if (i == 0) msg = L"[ptg]>" + s[i];
     else msg = L"     >" + s[i];
     D3DCOLOR color = D3DCOLOR_ARGB(150, 150, 150, 150);
@@ -318,10 +316,6 @@ void ClosedCaption::Draw() {
   }
 
   if (g_hover_messagebox) g_hover_messagebox->Draw();
-
-  for (const RECT& r : highlight_rects) {
-    DrawBorderedRectangle(r.left, r.top, (r.right - r.left), (r.bottom - r.top), D3DCOLOR_ARGB(0, 0, 0, 0), D3DCOLOR_ARGB(255, 32, 255, 32));
-  }
 
   // 恢复先前的渲染状态
   RestoreD3D9RenderState();

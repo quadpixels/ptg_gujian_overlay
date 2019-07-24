@@ -301,9 +301,6 @@ class ClosedCaption {
 
     bool IsDragging() { return is_dragging; }
 
-    void AppendHighlightRect(RECT x) { highlight_rects.push_back(x); }
-
-    void ClearHighlightRect() { highlight_rects.clear(); }
 
   private:
     bool visible;
@@ -314,7 +311,6 @@ class ClosedCaption {
     int x, y;
     int mouse_x_start_drag, mouse_y_start_drag;
     int x_start_drag, y_start_drag;
-    std::vector<RECT> highlight_rects;
 
     int GetVisibleWidth() { return this->line_width; }
     int GetVisibleHeight() { return this->visible_height; }
