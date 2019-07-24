@@ -7,23 +7,34 @@
 #include <d3dx9.h>
 #include <assert.h>
 #include <string>
+#include <vector>
+#include <fstream>
+
+#include "..\DLL1\config.h"
 
 HWND g_hwnd;
-int WIN_W = 1024, WIN_H = 200;
+int WIN_W = 1280, WIN_H = 800;
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
 LPDIRECT3D9 g_d3d;    // the pointer to our Direct3D interface
 LPDIRECT3DDEVICE9 g_d3ddev;    // the pointer to the device class
 HMODULE g_hmodule_dll1, g_hmodule_d3d9;
-
                             // function prototypes
 void InitD3D(HWND hWnd);    // sets up and initializes Direct3D
+void LoadTexture();
 void Render();    // renders a single frame
 void CleanD3D();    // closes Direct3D and releases memory
 void LoadDLL();
 
 LPD3DXFONT g_font;
 std::string g_cmd;
+
+std::vector<LPDIRECT3DTEXTURE9> g_textures;
+std::vector<LPD3DXSPRITE> g_sprites;
+int g_texture_idx = 0;
+D3DXVECTOR3 g_sprite_pos;
+
+PtgOverlayConfig g_config;
 
 void InitD3D(HWND hwnd) {
   g_d3d = Direct3DCreate9(D3D_SDK_VERSION);    // create the Direct3D interface
@@ -56,6 +67,28 @@ void InitD3D(HWND hwnd) {
   }
 }
 
+void LoadTexture() {
+
+  const std::string fn = g_config.root_path + "\\SampleScreenList.txt";
+
+  std::ifstream f(fn);
+  if (f.good()) {
+    while (f.good()) {
+      std::string line;
+      std::getline(f, line);
+      LPDIRECT3DTEXTURE9 tex;
+      LPD3DXSPRITE sprite;
+      if (SUCCEEDED(D3DXCreateTextureFromFileA(g_d3ddev, line.c_str(), &tex))) {
+        if (SUCCEEDED(D3DXCreateSprite(g_d3ddev, &sprite))) {
+          printf("[LoadTexture] Loaded [%s]\n", line.c_str());
+          g_textures.push_back(tex);
+          g_sprites.push_back(sprite);
+        }
+      }
+    }
+  }
+}
+
 typedef void(*Dll1SetD3D9DevicePtr)(void*);
 Dll1SetD3D9DevicePtr g_dll1_setd3d9deviceptr;
 
@@ -77,7 +110,11 @@ void LoadDLL() {
       g_dll1_setd3d9deviceptr(g_d3ddev);
     }
 
-    printf("Dll1's OnPresent = %p\n", g_dll1_onpresent);
+    printf("[LoadDLL] Dll1's OnPresent = %p\n", g_dll1_onpresent);
+  }
+  else {
+    DWORD last_error = GetLastError();
+    printf("[LoadDLL] g_module_dll1 is null, last error = %d(0x%X)\n", last_error, last_error);
   }
 }
 
@@ -115,7 +152,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
   );
 
   // INITIALIZE
+  g_config.Load();
   InitD3D(g_hwnd);
+  LoadTexture();
   LoadDLL();
 
   ShowWindow(g_hwnd, nCmdShow);
@@ -147,6 +186,16 @@ void OnKeyDown(WPARAM wParam, LPARAM lParam) {
     int id = atoi(g_cmd.c_str());
     g_cmd = "";
     g_dll1_setaudioid(id);
+    break;
+  }
+  case VK_LEFT: case VK_UP: {
+    g_texture_idx--;
+    if (g_texture_idx < 0) g_texture_idx = int(g_sprites.size()) - 1;
+    break;
+  }
+  case VK_RIGHT: case VK_DOWN: {
+    g_texture_idx++;
+    if (g_texture_idx >= int(g_sprites.size())) { g_texture_idx = 0; }
     break;
   }
   default: {
@@ -194,9 +243,17 @@ void Render() {
   
   // Testbed content
   {
+    if (g_texture_idx >= 0 && g_texture_idx < g_sprites.size()) {
+      LPD3DXSPRITE spr = g_sprites[g_texture_idx];
+      LPDIRECT3DTEXTURE9 tex = g_textures[g_texture_idx];
+      spr->Begin(D3DXSPRITE_ALPHABLEND);
+      spr->Draw(tex, NULL, NULL, &g_sprite_pos, 0xFFFFFFFF);
+      spr->End();
+    }
+
     RECT rect;
     rect.left = 2;
-    rect.top = 130;
+    rect.top = WIN_H - 100;
     rect.right = 200;
     rect.bottom = WIN_H;
 
