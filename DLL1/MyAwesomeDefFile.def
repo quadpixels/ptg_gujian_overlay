@@ -4,3 +4,4 @@ EXPORTS
    SetD3DDevicePtr  @2
    OnPresent    @3
    SetAudioID   @4
+   DetermineUIScaleFactor @5

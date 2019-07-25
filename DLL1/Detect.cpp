@@ -27,9 +27,15 @@ struct MatchTemplate {
   float scale;
   std::wstring caption;
   int direction; // 0123 = URDL
+
+  int group_id; // Only 1 instance may appear in one. 0 = ignore
+  int scene_id;
+
   MatchTemplate() { 
     scale = 0.5f;  // Use 0.5x resolution by default
     direction = 3;
+    group_id = 0;
+    scene_id = 0;
   }
 };
 
@@ -43,6 +49,26 @@ volatile bool g_detector_sleeping = true;
 DWORD WINAPI MyThreadFunction(LPVOID lpParam);
 void DoDetect(unsigned char* chr, const int len);
 void DoCheckMatchesDisappear(unsigned char* chr, const int len);
+float g_ui_scale_factor = 1.0f, g_ui_scale_prev = 1.0f;
+
+bool g_use_canny = false;
+bool g_canny_set_scale_1 = false;
+float g_canny_thresh1 = 100.0f, g_canny_thresh2 = 200.0f;
+cv::Size g_boxfilter_size = cv::Size(4, 4);
+float g_ccoeff_thresh = 0.7f;
+int g_last_scene_id = -999;
+
+void DetermineUIScaleFactor(const int w, const int h) {
+  if (w == 1280 && h == 1024) g_ui_scale_factor = 1.0f;
+  else {
+    g_ui_scale_factor = 1.0f * h / 800;
+    if (g_ui_scale_factor < 0.8f) g_ui_scale_factor = 0.8f;
+  }
+  if (g_ui_scale_factor != g_ui_scale_prev) {
+    printf("[DetermineUIScaleFactor] %d x %d, scale_factor=%g\n", w, h, g_ui_scale_factor);
+    g_ui_scale_prev = g_ui_scale_factor;
+  }
+}
 
 struct MatchResult {
   int idx;
@@ -101,7 +127,7 @@ void DoDetect(unsigned char* chr, const int len) {
   //g_surface_mat = cv::Mat(w, h, CV_8UC4, ch).t();
 
   cv::Mat raw_data_mat(1, len, CV_8UC1, chr);
-  cv::Mat tmp = cv::imdecode(raw_data_mat, cv::IMREAD_COLOR);
+  cv::Mat tmp_orig = cv::imdecode(raw_data_mat, cv::IMREAD_COLOR);
   raw_data_mat.release();
 
   std::unordered_map<float, cv::Mat*> resized;
@@ -109,17 +135,74 @@ void DoDetect(unsigned char* chr, const int len) {
   cv::Mat result;
   cv::TemplateMatchModes mode = cv::TM_CCOEFF_NORMED;
 
-  for (int i = 0; i < int(g_templates.size()); i++) {
+  std::unordered_set<int> groups;
+  int curr_scene = 0; // Once scene is determined, skip all objects not belonging to that scene
 
+  std::vector<int> template_idxes; //
+  {
+    std::unordered_map<int, std::list<int> > sid2idx;
+    
+    for (int i = 0; i < int(g_templates.size()); i++) {
+      sid2idx[g_templates[i].scene_id].push_back(i);
+    }
+
+    if (false) { // put last scene's objects to the front?
+      for (int i : sid2idx[g_last_scene_id]) {
+        template_idxes.push_back(i);
+      }
+      sid2idx.erase(g_last_scene_id);
+    }
+
+    while (true) {
+      bool added = false;
+      for (std::unordered_map<int, std::list<int> >::iterator itr = sid2idx.begin(); itr != sid2idx.end(); itr++) {
+        if (itr->second.empty() == false) {
+          template_idxes.push_back(itr->second.front());
+          itr->second.pop_front();
+          added = true;
+        }
+      }
+      if (!added) break;
+    }
+  }
+
+  for (int x = 0; x < int(g_templates.size()); x++) {
+    int i = template_idxes[x];
     const cv::Mat& m = *(g_templates[i].mat);
+    const int group_id = g_templates[i].group_id;
+    const int scene_id = g_templates[i].scene_id;
+
+    if ((group_id != 0) && (groups.find(group_id) != groups.end())) continue;
+    if (curr_scene != 0 && scene_id != curr_scene) continue;
 
     const float scale = g_templates[i].scale;
 
     cv::Mat* r = nullptr;
     if (resized.find(scale) == resized.end()) {
+
+      cv::Mat tmp = tmp_orig.clone();
+
+      if (g_ui_scale_factor != 1.0f) {
+        cv::Mat origsize;
+        cv::resize(tmp, origsize, cv::Size(0, 0), 1.0f / g_ui_scale_factor, 1.0f / g_ui_scale_factor, cv::INTER_NEAREST);
+        tmp.release();
+        origsize.assignTo(tmp);
+
+        cv::imwrite("c:\\temp\\tmp.png", tmp);
+      }
+
+      if (g_use_canny) {
+        cv::Mat tmp1;
+        cv::Canny(tmp, tmp1, g_canny_thresh1, g_canny_thresh2);
+        cv::boxFilter(tmp1, tmp, -1, g_boxfilter_size);
+        //tmp = tmp1;
+      }
+
       r = new cv::Mat();
       cv::resize(tmp, *r, cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
+
       resized[scale] = r;
+      tmp.release();
     }
 
     r = resized[scale];
@@ -142,25 +225,31 @@ void DoDetect(unsigned char* chr, const int len) {
       ans = max_loc;
       metric = max_val;
       if (mode == cv::TM_CCOEFF_NORMED) {
-        if (metric > 0.8) {
+        if (metric > g_ccoeff_thresh) {
           found = true;
         }
       }
       break;
     }
 
-    printf("   [DoDetect] %s, scale=%g, Min Loc: (%d,%d); min&max val:(%g,%g) found=%d\n",
-      g_templates[i].caption.c_str(), g_templates[i].scale,
-      int(ans.x / scale), int(ans.y / scale),
+    // Divide by scale gives coordinate at 100% UI scale
+    // Multiplication by g_ui_scale_factor gives coordinates on rendered frame
+    wprintf(L"   [DoDetect] %ls [Group %d] scale=%g, r=(%dx%d), Min Loc:(%d,%d)->(%d,%d); min&max val:(%g,%g) found=%d\n",
+      g_templates[i].caption.c_str(), 
+      g_templates[i].group_id,
+      g_templates[i].scale,
+      r->cols, r->rows,
+      ans.x, ans.y,
+      int(ans.x / scale * g_ui_scale_factor), int(ans.y / scale * g_ui_scale_factor),
       min_val, max_val,
       found);
 
     if (found == true) {
       RECT r_scaled, r_orig;
-      r_orig.left = ans.x / scale;
-      r_orig.top = ans.y / scale;
-      r_orig.right = r_orig.left + (m.cols / scale);
-      r_orig.bottom = r_orig.top + (m.rows / scale);
+      r_orig.left = ans.x / scale * g_ui_scale_factor;
+      r_orig.top = ans.y / scale * g_ui_scale_factor;
+      r_orig.right = r_orig.left + (m.cols / scale * g_ui_scale_factor);
+      r_orig.bottom = r_orig.top + (m.rows / scale * g_ui_scale_factor);
 
       r_scaled.left = ans.x;
       r_scaled.top = ans.y;
@@ -169,12 +258,16 @@ void DoDetect(unsigned char* chr, const int len) {
 
       struct MatchResult mr(i, r_scaled, r_orig);
       next_rect.push_back(mr);
+
+      if (group_id != 0) groups.insert(group_id);
+      curr_scene = scene_id;
     }
   }
+  g_last_scene_id = curr_scene;
 
-  tmp.release();
+  tmp_orig.release();
 
-  printf("<<< [DoDetect]\n");
+  printf("<<< [DoDetect] |resized|=%lu\n", resized.size());
 
   for (std::pair<float, cv::Mat*> p : resized) {
     p.second->release();
@@ -205,7 +298,23 @@ void DoCheckMatchesDisappear(unsigned char* chr, const int len) {
     cv::Mat* r = nullptr;
     if (resized.find(scale) == resized.end()) {
       r = new cv::Mat();
+
+      if (g_ui_scale_factor != 1.0f) {
+        cv::Mat origsize;
+        cv::resize(tmp, origsize, cv::Size(0, 0), 1.0f / g_ui_scale_factor, 1.0f / g_ui_scale_factor);
+        tmp = origsize;
+      }
+
+      if (g_use_canny) {
+        cv::Mat tmp1(tmp.rows, tmp.cols, tmp.type());
+        cv::Canny(tmp, tmp1, g_canny_thresh1, g_canny_thresh2);
+        cv::boxFilter(tmp1, tmp, -1, g_boxfilter_size);
+        //tmp1.copyTo(*r);
+        //tmp1.release();
+      }
+
       cv::resize(tmp, *r, cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
+
       resized[scale] = r;
     }
     r = resized[scale];
@@ -213,12 +322,20 @@ void DoCheckMatchesDisappear(unsigned char* chr, const int len) {
     const int resized_w = mr.rect_scaled.right - mr.rect_scaled.left;
     const int resized_h = mr.rect_scaled.bottom - mr.rect_scaled.top;
 
-    cv::Mat cropped(resized_h, resized_w, tmp.type());
+    int ty = (g_use_canny) ? CV_8U : tmp.type();
+    cv::Mat cropped(resized_h, resized_w, ty);
+
     for (int x = mr.rect_scaled.left, x0 = 0; x < mr.rect_scaled.right; x++, x0++) {
       for (int y = mr.rect_scaled.top, y0 = 0; y < mr.rect_scaled.bottom; y++, y0++) {
         //cropped.row(y0).col(x0) = r->row(y).col(x);
-        cropped.at<cv::Vec3b>(y0, x0) = r->at<cv::Vec3b>(y, x);
+        if (g_use_canny == false)
+          cropped.at<cv::Vec3b>(y0, x0) = r->at<cv::Vec3b>(y, x);
+        else
+          cropped.at<char>(y0, x0) = r->at<char>(y0, x0);
       }
+
+      // DBG
+      cv::imwrite("C:\\temp\\cropped.png", cropped);
     }
 
     cv::Mat result;
@@ -229,7 +346,7 @@ void DoCheckMatchesDisappear(unsigned char* chr, const int len) {
     cv::minMaxLoc(result, &min_val, &max_val, &min_loc, &max_loc, cv::Mat());
     double metric = max_val;
     printf("[%d], metric=%g\n", idx, metric);
-    if (metric < 0.8) {
+    if (metric < g_ccoeff_thresh) {
       victim_idxes.insert(idx);
     }
 
@@ -273,9 +390,12 @@ void LoadImagesAndInitDetectThread() {
       while (f.good()) {
         std::string file_name, caption;
         std::string line, x;
-        float scale = 0.5;
+        float scale = 1.0f;
 
         std::getline(f, line);
+
+        if (line[0] == '#') continue; // Commented out
+
         std::vector<std::string> sp;
         for (int i = 0; i < line.size(); i++) {
           if (line[i] == '\t') {
@@ -291,19 +411,41 @@ void LoadImagesAndInitDetectThread() {
           MatchTemplate t;
           file_name = dir_name + "\\" + sp[0]; caption = sp[1];
 
-          if (sp.size() >= 3) {
-            scale = std::stof(sp[2]);
-            if (scale < 0 || scale > 1) scale = 0.5f;
-            t.scale = scale;
+          if (sp.size() >= 3 && sp[2] != "NA") {
+            if (g_use_canny == true && g_canny_set_scale_1 == true)  {
+              t.scale = 1.0f;
+            } else {
+              scale = std::stof(sp[2]);
+              if (scale < 0 || scale > 1) scale = 0.5f;
+              t.scale = scale;
+            }
           }
 
-          if (sp.size() >= 4) {
+          if (sp.size() >= 4 && sp[3] != "NA") {
             t.direction = std::stoi(sp[3]);
           }
 
+          if (sp.size() >= 5 && sp[4] != "NA") {
+            t.group_id = std::stoi(sp[4]);
+          }
+
+          if (sp.size() >= 6 && sp[5] != "NA") {
+            t.scene_id = std::stoi(sp[5]);
+          }
+
           cv::Mat tmp = cv::imread(file_name.c_str(), cv::IMREAD_COLOR);
+          
+          if (g_use_canny) {
+            cv::Mat tmp1;
+            cv::Canny(tmp, tmp1, g_canny_thresh1, g_canny_thresh2);
+            cv::boxFilter(tmp1, tmp, -1, g_boxfilter_size);
+          }
+
           t.mat = new cv::Mat();
+
           cv::resize(tmp, *(t.mat), cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
+
+          cv::Mat tmp1(t.mat->rows, t.mat->cols, t.mat->type());
 
           // MBS to WCS
           int len_caption = MultiByteToWideChar(CP_UTF8, 0, caption.c_str(), -1, NULL, NULL);

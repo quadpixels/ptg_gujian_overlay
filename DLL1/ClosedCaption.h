@@ -140,7 +140,7 @@ class ClosedCaption {
         }
         idx++;
       }
-      printf("[LoadIndexFromMemory] %d entries\n", num_ety);
+      //printf("[LoadIndexFromMemory] %d entries\n", num_ety);
     }
 
     // CSV分隔，[ID, Char_CHS, CHS, Char_ENG, ENG_Rev]
