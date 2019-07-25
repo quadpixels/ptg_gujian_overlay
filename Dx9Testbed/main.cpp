@@ -30,6 +30,7 @@ LPD3DXFONT g_font;
 std::string g_cmd;
 
 std::vector<LPDIRECT3DTEXTURE9> g_textures;
+std::vector<std::pair<int, int> > g_imgsizes;
 std::vector<LPD3DXSPRITE> g_sprites;
 int g_texture_idx = 0;
 D3DXVECTOR3 g_sprite_pos;
@@ -80,7 +81,29 @@ void LoadTexture() {
       LPD3DXSPRITE sprite;
       if (SUCCEEDED(D3DXCreateTextureFromFileA(g_d3ddev, line.c_str(), &tex))) {
         if (SUCCEEDED(D3DXCreateSprite(g_d3ddev, &sprite))) {
-          printf("[LoadTexture] Loaded [%s]\n", line.c_str());
+
+          int idx1 = int(line.size() - 1), w, h;
+          while (line[idx1] != '.' && (idx1 - 1 >= 0)) {
+            idx1--;
+          }
+          int idx0 = idx1 - 1;
+          while (true) {
+            char c = line[idx0];
+            if ((c >= '0' && c <= '9') || c == 'x') idx0--;
+            else break;
+          }
+          idx0++;
+          std::string res = line.substr(idx0, idx1 - idx0);
+          if (sscanf_s(res.c_str(), "%dx%d", &w, &h) == 2) {
+            ;
+          }
+          else {
+            w = 1280; h = 800;
+          }
+          g_imgsizes.push_back(std::make_pair(w, h));
+
+          printf("[LoadTexture] Loaded [%s], treating as %dx%d\n", line.c_str(), w, h);
+
           g_textures.push_back(tex);
           g_sprites.push_back(sprite);
         }
@@ -98,6 +121,9 @@ Dll1OnPresent g_dll1_onpresent;
 typedef void(*SetAudioID)(int);
 SetAudioID g_dll1_setaudioid;
 
+typedef void(*DetermineUIScaleFactor)(int, int);
+DetermineUIScaleFactor g_dll1_determine_ui_scale;
+
 void LoadDLL() {
   g_hmodule_dll1 = LoadLibrary(L"Dll1.dll"); // <-- CWD !
   
@@ -105,6 +131,7 @@ void LoadDLL() {
     g_dll1_setd3d9deviceptr = (Dll1SetD3D9DevicePtr)(GetProcAddress(g_hmodule_dll1, MAKEINTRESOURCEA(2))); // Export number 2
     g_dll1_onpresent = (Dll1OnPresent)(GetProcAddress(g_hmodule_dll1, MAKEINTRESOURCEA(3)));
     g_dll1_setaudioid = (SetAudioID)(GetProcAddress(g_hmodule_dll1, MAKEINTRESOURCEA(4)));
+    g_dll1_determine_ui_scale = (DetermineUIScaleFactor)(GetProcAddress(g_hmodule_dll1, MAKEINTRESOURCEA(5)));
 
     if (g_dll1_setd3d9deviceptr) {
       g_dll1_setd3d9deviceptr(g_d3ddev);
@@ -246,6 +273,10 @@ void Render() {
     if (g_texture_idx >= 0 && g_texture_idx < g_sprites.size()) {
       LPD3DXSPRITE spr = g_sprites[g_texture_idx];
       LPDIRECT3DTEXTURE9 tex = g_textures[g_texture_idx];
+
+      std::pair<int, int> res = g_imgsizes[g_texture_idx];
+      g_dll1_determine_ui_scale(res.first, res.second);
+
       spr->Begin(D3DXSPRITE_ALPHABLEND);
       spr->Draw(tex, NULL, NULL, &g_sprite_pos, 0xFFFFFFFF);
       spr->End();
