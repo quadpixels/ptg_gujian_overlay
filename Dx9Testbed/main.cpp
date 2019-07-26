@@ -125,7 +125,7 @@ typedef void(*DetermineUIScaleFactor)(int, int);
 DetermineUIScaleFactor g_dll1_determine_ui_scale;
 
 void LoadDLL() {
-  g_hmodule_dll1 = LoadLibrary(L"Dll1.dll"); // <-- CWD !
+  g_hmodule_dll1 = LoadLibrary(L"ptg_overlay.dll"); // <-- CWD !
   
   if (g_hmodule_dll1) {
     g_dll1_setd3d9deviceptr = (Dll1SetD3D9DevicePtr)(GetProcAddress(g_hmodule_dll1, MAKEINTRESOURCEA(2))); // Export number 2

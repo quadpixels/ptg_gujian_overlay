@@ -1,4 +1,4 @@
-LIBRARY   DLL1
+LIBRARY   PTG_OVERLAY
 EXPORTS  
    Initialize   @1 
    SetD3DDevicePtr  @2

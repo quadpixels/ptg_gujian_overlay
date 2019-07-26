@@ -21,6 +21,9 @@ extern PtgOverlayConfig g_config;
 extern void BackupD3D9RenderState();
 extern void RestoreD3D9RenderState();
 
+// TODO: Detect whether dialog box exists
+// TODO: greyscale ??
+
 // 每个Template 可以有自己的 scale
 struct MatchTemplate {
   cv::Mat* mat;
@@ -41,7 +44,9 @@ struct MatchTemplate {
 
 // 屏幕内容检测用
 cv::Mat g_surface_mat;
-std::vector<MatchTemplate> g_templates;
+std::vector<MatchTemplate*> g_templates;
+std::unordered_map < MatchTemplate*, std::pair<int, int> > g_match_cache;
+const int g_cache_probe_radius = 5; // Scaled px size
 HANDLE g_detector_thd_handle;
 DWORD  g_detector_thd_id;
 volatile bool g_detector_done = false;
@@ -50,6 +55,9 @@ DWORD WINAPI MyThreadFunction(LPVOID lpParam);
 void DoDetect(unsigned char* chr, const int len);
 void DoCheckMatchesDisappear(unsigned char* chr, const int len);
 float g_ui_scale_factor = 1.0f, g_ui_scale_prev = 1.0f;
+
+const bool IMPATIENT = true;
+const int CACHE_SIZE_LIMIT = 1;
 
 bool g_use_canny = false;
 bool g_canny_set_scale_1 = false;
@@ -64,16 +72,33 @@ void DetermineUIScaleFactor(const int w, const int h) {
     g_ui_scale_factor = 1.0f * h / 800;
     if (g_ui_scale_factor < 0.8f) g_ui_scale_factor = 0.8f;
   }
+
   if (g_ui_scale_factor != g_ui_scale_prev) {
+
+    g_match_cache.clear();
+
     printf("[DetermineUIScaleFactor] %d x %d, scale_factor=%g\n", w, h, g_ui_scale_factor);
     g_ui_scale_prev = g_ui_scale_factor;
   }
+}
+
+bool RectEqual(const RECT& r1, const RECT& r2) {
+  if (r1.bottom == r2.bottom &&
+    r1.left == r2.left &&
+    r1.right == r2.right &&
+    r1.top == r2.top) return true;
+  else return false;
 }
 
 struct MatchResult {
   int idx;
   RECT rect_scaled;
   RECT rect_orig;
+  bool operator==(const struct MatchResult& other) const {
+    return (idx == other.idx 
+      && RectEqual(rect_scaled, other.rect_scaled)
+      && RectEqual(rect_orig, other.rect_orig));
+  }
   MatchResult(int _idx, RECT _scaled, RECT _orig) {
     idx = _idx;
     rect_scaled = _scaled;
@@ -120,6 +145,18 @@ DWORD WINAPI MyThreadFunction(LPVOID lpParam) {
   return S_OK;
 }
 
+// TODO: Support different pixel formats
+cv::Mat MyCrop(const cv::Mat in, RECT range) {
+  const int W = range.right - range.left, H = range.bottom - range.top;
+  cv::Mat ret(H, W, in.type());
+  for (int y0 = range.top, y1 = 0; y0 < range.bottom; y0++, y1++) {
+    for (int x0 = range.left, x1 = 0; x0 < range.right; x0++, x1++) {
+      ret.at<cv::Vec3b>(y1, x1) = in.at<cv::Vec3b>(y0, x0);
+    }
+  }
+  return ret;
+}
+
 // About half second using debug library
 void DoDetect(unsigned char* chr, const int len) {
   std::vector<struct MatchResult> next_rect;
@@ -143,7 +180,7 @@ void DoDetect(unsigned char* chr, const int len) {
     std::unordered_map<int, std::list<int> > sid2idx;
     
     for (int i = 0; i < int(g_templates.size()); i++) {
-      sid2idx[g_templates[i].scene_id].push_back(i);
+      sid2idx[g_templates[i]->scene_id].push_back(i);
     }
 
     if (false) { // put last scene's objects to the front?
@@ -168,14 +205,14 @@ void DoDetect(unsigned char* chr, const int len) {
 
   for (int x = 0; x < int(g_templates.size()); x++) {
     int i = template_idxes[x];
-    const cv::Mat& m = *(g_templates[i].mat);
-    const int group_id = g_templates[i].group_id;
-    const int scene_id = g_templates[i].scene_id;
+    const cv::Mat& m = *(g_templates[i]->mat);
+    const int group_id = g_templates[i]->group_id;
+    const int scene_id = g_templates[i]->scene_id;
 
     if ((group_id != 0) && (groups.find(group_id) != groups.end())) continue;
     if (curr_scene != 0 && scene_id != curr_scene) continue;
 
-    const float scale = g_templates[i].scale;
+    const float scale = g_templates[i]->scale;
 
     cv::Mat* r = nullptr;
     if (resized.find(scale) == resized.end()) {
@@ -187,8 +224,6 @@ void DoDetect(unsigned char* chr, const int len) {
         cv::resize(tmp, origsize, cv::Size(0, 0), 1.0f / g_ui_scale_factor, 1.0f / g_ui_scale_factor, cv::INTER_NEAREST);
         tmp.release();
         origsize.assignTo(tmp);
-
-        cv::imwrite("c:\\temp\\tmp.png", tmp);
       }
 
       if (g_use_canny) {
@@ -207,10 +242,27 @@ void DoDetect(unsigned char* chr, const int len) {
 
     r = resized[scale];
 
-    cv::matchTemplate(*r, m, result, mode);
+    // Cache or not cache?
+    bool in_cache = (g_match_cache.find(g_templates[i]) != g_match_cache.end());
     cv::Point min_loc, max_loc;
     double min_val, max_val;
-    cv::minMaxLoc(result, &min_val, &max_val, &min_loc, &max_loc, cv::Mat());
+
+    if (in_cache) { // Partial match
+      std::pair<int, int> p = g_match_cache[g_templates[i]];
+      RECT c;
+      c.left = p.first; c.top = p.second;
+      c.right = c.left + g_templates[i]->mat->cols;
+      c.bottom = c.top + g_templates[i]->mat->rows;
+      cv::Mat roi = MyCrop(*r, c);
+      cv::matchTemplate(roi, m, result, mode);
+      cv::minMaxLoc(result, &min_val, &max_val, &min_loc, &max_loc, cv::Mat());
+      min_loc.x += c.left; min_loc.y += c.top;
+      max_loc.x += c.left; max_loc.y += c.top;
+      printf("Template[%d], using cache\n", i);
+    } else { // Full match
+      cv::matchTemplate(*r, m, result, mode);
+      cv::minMaxLoc(result, &min_val, &max_val, &min_loc, &max_loc, cv::Mat());
+    }
 
     cv::Point ans;
     double metric;
@@ -235,9 +287,9 @@ void DoDetect(unsigned char* chr, const int len) {
     // Divide by scale gives coordinate at 100% UI scale
     // Multiplication by g_ui_scale_factor gives coordinates on rendered frame
     wprintf(L"   [DoDetect] %ls [Group %d] scale=%g, r=(%dx%d), Min Loc:(%d,%d)->(%d,%d); min&max val:(%g,%g) found=%d\n",
-      g_templates[i].caption.c_str(), 
-      g_templates[i].group_id,
-      g_templates[i].scale,
+      g_templates[i]->caption.c_str(), 
+      g_templates[i]->group_id,
+      g_templates[i]->scale,
       r->cols, r->rows,
       ans.x, ans.y,
       int(ans.x / scale * g_ui_scale_factor), int(ans.y / scale * g_ui_scale_factor),
@@ -258,6 +310,16 @@ void DoDetect(unsigned char* chr, const int len) {
 
       struct MatchResult mr(i, r_scaled, r_orig);
       next_rect.push_back(mr);
+
+      if (IMPATIENT) { // 发现了就马上渲染，不要让用户等太久
+        EnterCriticalSection(&g_critsect_rectlist);
+        if (std::find(highlight_rects.begin(), highlight_rects.end(), mr) == highlight_rects.end()) {
+          highlight_rects.push_back(mr);
+        }
+        LeaveCriticalSection(&g_critsect_rectlist);
+      }
+
+      g_match_cache[g_templates[i]] = std::make_pair(r_scaled.left, r_scaled.top);
 
       if (group_id != 0) groups.insert(group_id);
       curr_scene = scene_id;
@@ -291,7 +353,7 @@ void DoCheckMatchesDisappear(unsigned char* chr, const int len) {
 
   int idx = 0;
   for (const MatchResult& mr : highlight_rects) {
-    const MatchTemplate& mt = g_templates[mr.idx];
+    const MatchTemplate& mt = *(g_templates[mr.idx]);
     const float scale = mt.scale;
 
     // Obtain texture that matches the template's scale
@@ -335,7 +397,7 @@ void DoCheckMatchesDisappear(unsigned char* chr, const int len) {
       }
 
       // DBG
-      cv::imwrite("C:\\temp\\cropped.png", cropped);
+      //cv::imwrite("C:\\temp\\cropped.png", cropped);
     }
 
     cv::Mat result;
@@ -408,29 +470,29 @@ void LoadImagesAndInitDetectThread() {
         if (x.size() > 0) sp.push_back(x);
 
         if (sp.size() >= 2) {
-          MatchTemplate t;
+          MatchTemplate* t = new MatchTemplate();;
           file_name = dir_name + "\\" + sp[0]; caption = sp[1];
 
           if (sp.size() >= 3 && sp[2] != "NA") {
             if (g_use_canny == true && g_canny_set_scale_1 == true)  {
-              t.scale = 1.0f;
+              t->scale = 1.0f;
             } else {
               scale = std::stof(sp[2]);
               if (scale < 0 || scale > 1) scale = 0.5f;
-              t.scale = scale;
+              t->scale = scale;
             }
           }
 
           if (sp.size() >= 4 && sp[3] != "NA") {
-            t.direction = std::stoi(sp[3]);
+            t->direction = std::stoi(sp[3]);
           }
 
           if (sp.size() >= 5 && sp[4] != "NA") {
-            t.group_id = std::stoi(sp[4]);
+            t->group_id = std::stoi(sp[4]);
           }
 
           if (sp.size() >= 6 && sp[5] != "NA") {
-            t.scene_id = std::stoi(sp[5]);
+            t->scene_id = std::stoi(sp[5]);
           }
 
           cv::Mat tmp = cv::imread(file_name.c_str(), cv::IMREAD_COLOR);
@@ -441,21 +503,21 @@ void LoadImagesAndInitDetectThread() {
             cv::boxFilter(tmp1, tmp, -1, g_boxfilter_size);
           }
 
-          t.mat = new cv::Mat();
+          t->mat = new cv::Mat();
 
-          cv::resize(tmp, *(t.mat), cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
+          cv::resize(tmp, *(t->mat), cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
 
-          cv::Mat tmp1(t.mat->rows, t.mat->cols, t.mat->type());
+          cv::Mat tmp1(t->mat->rows, t->mat->cols, t->mat->type());
 
           // MBS to WCS
           int len_caption = MultiByteToWideChar(CP_UTF8, 0, caption.c_str(), -1, NULL, NULL);
           wchar_t* wcaption = new wchar_t[len_caption];
           MultiByteToWideChar(CP_UTF8, 0, caption.c_str(), -1, wcaption, len_caption);
-          t.caption = wcaption;
+          t->caption = wcaption;
           delete wcaption;
 
           printf("Loaded template [%s] = %dx%d, resized=%dx%d\n",
-            file_name.c_str(), tmp.cols, tmp.rows, t.mat->cols, t.mat->rows);
+            file_name.c_str(), tmp.cols, tmp.rows, t->mat->cols, t->mat->rows);
           g_templates.push_back(t);
         }
       }
@@ -478,7 +540,7 @@ void DrawHighlightRects() {
   BackupD3D9RenderState();
 
   for (const MatchResult& mr : highlight_rects) {
-    struct MatchTemplate t = g_templates[mr.idx];
+    const struct MatchTemplate& t = *(g_templates[mr.idx]);
     const std::wstring& caption = t.caption;
     
     // Measure text width
