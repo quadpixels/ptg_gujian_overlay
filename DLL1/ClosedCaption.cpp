@@ -12,10 +12,12 @@ extern LPD3DXFONT g_font;
 extern int FONT_SIZE;
 extern MyMessageBox* g_hover_messagebox;
 extern IDirect3DDevice9* g_pD3DDevice;
+extern bool IsDialogBoxMaybeGone();
 
 IDirect3DVertexBuffer9* g_vert_buf;
 IDirect3DStateBlock9* g_pStateBlock;
 extern mz_zip_archive g_archive_dialog_aligned;
+extern RECT g_curr_dialogbox_rect; // Detect.cpp
 
 struct MyD3D9RenderState {
   DWORD alpha_blend_enable, blend_op, blend_op_alpha, src_blend, dest_blend, lighting, cull_mode;
@@ -117,17 +119,26 @@ void DrawBorderedRectangle(int x, int y, int w, int h, D3DCOLOR bkcolor, D3DCOLO
 int ClosedCaption::PADDING_LEFT = 0;
 int ClosedCaption::PADDING_TOP = 3;
 int ClosedCaption::MOUSE_Y_DELTA = 24;
+int ClosedCaption::FADE_IN_MILLIS = 300;
+int ClosedCaption::FADE_OUT_MILLIS = 2000;
 
-ClosedCaption::ClosedCaption() {
-  visible = true;
+long long g_last_dialogbox_present_millis = 0;
+
+ClosedCaption::ClosedCaption() { 
+  opacity_end = 1.0f;
+  opacity = 1.0f;
+  fade_end_millis = MillisecondsNow() + FADE_IN_MILLIS;
+  fade_duration = FADE_IN_MILLIS;
+
   line_width = 640;
   visible_height = 16;
   x = 2;
   y = 29;
+
+  LoadDummy();
 }
 
 std::wstring ClosedCaption::GetCurrLine() {
-
   const long long curr_millis = MillisecondsNow();
   float elapsed = (curr_millis - start_millis) / 1000.0f;
   std::wstring ret = speaker + L"：";
@@ -162,14 +173,14 @@ void ClosedCaption::ComputeBoundingBoxPerChar() {
     wchar_t msg[1024];
 
     // Header
-    if (i == 0) wsprintf(msg, L"[ptg]>");
-    else wsprintf(msg, L"     >");
+    if (i == 0) wsprintf(msg, L">");
+    else wsprintf(msg, L">");
     g_font->DrawTextW(NULL, msg, wcslen(msg), &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
 
     int last_x = rect.right;
-    if (i == 0) wsprintf(msg, L"[ptg]>%ls", s[i].c_str());
-    else wsprintf(msg, L"     >%ls", s[i].c_str());
-    const int HEADER_LEN = 6;
+    if (i == 0) wsprintf(msg, L">%ls", s[i].c_str());
+    else wsprintf(msg, L">%ls", s[i].c_str());
+    const int HEADER_LEN = 1;
     for (int j = HEADER_LEN; j < wcslen(msg); j++) {
       g_font->DrawTextW(0, msg, j + 1, &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
       const int curr_x = rect.right;
@@ -229,7 +240,7 @@ void ClosedCaption::do_DrawHighlightedProperNouns(RECT rect_header, RECT rect, c
       //printf("Curr Segment: (lb1,ub1)=(%d,%d)\n", lb1, ub1);
       std::wstring preceding = line.substr(0, lb_vis - lb);
       std::wstring content = line.substr(lb_vis, ub_vis - lb_vis + 1);
-      std::wstring teststr = L"     >" + preceding;
+      std::wstring teststr = L">" + preceding;
       g_font->DrawTextW(NULL, teststr.c_str(), teststr.size(), &rect_header1, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
       rect1.left += rect_header1.right - rect_header1.left;
       g_font->DrawTextW(NULL, content.c_str(), int(content.size()), &rect1, DT_NOCLIP, color);
@@ -241,8 +252,71 @@ void ClosedCaption::do_DrawBorder(int x, int y, int w, int h) {
   
 }
 
+void ClosedCaption::Update() {
+  const long long millis = MillisecondsNow();
+  const bool dialogbox_maybe_gone = IsDialogBoxMaybeGone();
+
+  // Update Caption playback state
+  if (caption_state == CAPTION_PLAYING) {
+    float elapsed = (millis - start_millis) / 1000.0f;
+    if (millis2word.size() > 0 && elapsed > millis2word.rbegin()->first.second) {
+      caption_state = CAPTION_PLAY_ENDED;
+      printf("[Update] CAPTION_PLAY_ENDED\n");
+    }
+  }
+  else if (caption_state == CAPTION_PLAY_ENDED) { // AUTO HIDE!
+    float elapsed = (millis - start_millis) / 1000.0f;
+    const float AUTO_HIDE_TIMEOUT = 2; // seconds
+    if (millis2word.size() > 0 && 
+      elapsed > millis2word.rbegin()->first.second + AUTO_HIDE_TIMEOUT &&
+      dialogbox_maybe_gone) {
+      caption_state = CAPTION_NOT_PLAYING;
+      
+      {
+        opacity_start = opacity;
+        fade_end_millis = millis + FADE_OUT_MILLIS;
+        fade_duration = FADE_OUT_MILLIS;
+        opacity_end = 0.0f;
+      }
+    }
+  }
+  else if (caption_state == CAPTION_PLAYING_NO_TIMELINE) {
+    if (!dialogbox_maybe_gone) {
+      g_last_dialogbox_present_millis = millis;
+    }
+    else {
+      const long AUTO_HIDE_TIMEOUT_MILLIS = 1000; // msec
+      if (millis - g_last_dialogbox_present_millis > AUTO_HIDE_TIMEOUT_MILLIS) {
+        caption_state = CAPTION_NOT_PLAYING;
+        {
+          opacity_start = opacity;
+          fade_end_millis = millis + FADE_OUT_MILLIS;
+          fade_duration = FADE_OUT_MILLIS;
+          opacity_end = 0.0f;
+        }
+      }
+    }
+  }
+
+  // Update Opacity
+  if (millis < fade_end_millis) {
+    float completion = 1.0f - (fade_end_millis - millis) * 1.0f / fade_duration;
+    if (completion < 0.0f) {
+      completion = 0.0f;
+    }
+    else if (completion > 1.0f) completion = 1.0f;
+    opacity = opacity_start * (1.0f - completion) + opacity_end * completion;
+  }
+  else {
+    opacity = opacity_end;
+  }
+}
+
 void ClosedCaption::Draw() {
-  if (!visible) return;
+
+  long long millis = MillisecondsNow();
+  
+  if (IsVisible() == false) return;
 
   // 保存先前的渲染状态
   BackupD3D9RenderState();
@@ -252,21 +326,22 @@ void ClosedCaption::Draw() {
 
   std::vector<std::wstring> s = GetVisualLines(true);
   std::vector<std::wstring> c = GetVisualLines(false);
+  
+  const float o = GetOpacity();
 
   // Border?
   {
-    D3DCOLOR bkcolor = D3DCOLOR_ARGB(128, 102, 52, 35), bordercolor = D3DCOLOR_XRGB(255, 255, 255);
+    D3DCOLOR bkcolor = D3DCOLOR_ARGB(int(128 * o), 102, 52, 35), bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 255, 255);
     if (is_dragging && is_hovered) {
-      bordercolor = D3DCOLOR_XRGB(255, 32, 32);
+      bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 32, 32);
     } else if (is_hovered) {
-      bordercolor = D3DCOLOR_XRGB(255, 255, 0);
+      bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 255, 0);
     }
     DrawBorderedRectangle(x, y, 90 + this->line_width, s.size() * FONT_SIZE + 5, bkcolor, bordercolor);
     visible_height = s.size() * FONT_SIZE + 5;
   }
 
   const int CHAR_PER_SEC = 20; // 是否渐出
-  long long millis = MillisecondsNow();
   int offset = 0;
 
   for (int i = 0; i < s.size(); i++) {
@@ -276,29 +351,29 @@ void ClosedCaption::Draw() {
     std::wstring msg;
 
     // Measure header width
-    if (i == 0) msg = L"[ptg]>";
-    else msg = L"     >";
-    g_font->DrawTextW(NULL, msg.c_str(), msg.size(), &rect_header, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
+    if (i == 0) msg = L">";
+    else msg = L">";
+    g_font->DrawTextW(NULL, msg.c_str(), msg.size(), &rect_header, DT_CALCRECT, D3DCOLOR_ARGB(int(255 * o), 255, 255, 255));
 
     // Draw full text
-    if (i == 0) msg = L"[ptg]>" + s[i];
-    else msg = L"     >" + s[i];
-    D3DCOLOR color = D3DCOLOR_ARGB(150, 150, 150, 150);
+    if (i == 0) msg = L">" + s[i];
+    else msg = L">" + s[i];
+    D3DCOLOR color = D3DCOLOR_ARGB(int(150 * o), 150, 150, 150);
     g_font->DrawTextW(0, msg.c_str(), msg.size(), &rect, DT_NOCLIP, color);
 
     // Draw proper nouns that are not highlighted
-    do_DrawHighlightedProperNouns(rect_header, rect, offset, s[i], D3DCOLOR_ARGB(150, 200, 200, 150));
+    do_DrawHighlightedProperNouns(rect_header, rect, offset, s[i], D3DCOLOR_ARGB(int(150 * o), 200, 200, 150));
 
     // Draw current text
     if (i < c.size()) {
       msg = c[i];
       RECT rect_backup = rect;
       rect.left += (rect_header.right - rect_header.left);
-      color = D3DCOLOR_ARGB(255, 255, 255, 255);
+      color = D3DCOLOR_ARGB(int(255 * o), 255, 255, 255);
       g_font->DrawTextW(0, msg.c_str(), msg.size(), &rect, DT_NOCLIP, color);
 
       // Draw proper nouns that are not highlighted (Very similar to above)
-      do_DrawHighlightedProperNouns(rect_header, rect_backup, offset, c[i], D3DCOLOR_ARGB(255, 255, 255, 192));
+      do_DrawHighlightedProperNouns(rect_header, rect_backup, offset, c[i], D3DCOLOR_ARGB(int(255 * o), 255, 255, 192));
     }
     offset += int(s[i].size());
   }
@@ -311,7 +386,7 @@ void ClosedCaption::Draw() {
 
       int ix = idx;
       wchar_t ch = GetFullLine()[ix];
-      g_font->DrawTextW(0, &ch, 1, &r, DT_NOCLIP, D3DCOLOR_ARGB(255, 33, 255, 33));
+      g_font->DrawTextW(0, &ch, 1, &r, DT_NOCLIP, D3DCOLOR_ARGB(int(255 * o), 33, 255, 33));
     }
   }
 
@@ -321,6 +396,71 @@ void ClosedCaption::Draw() {
   RestoreD3D9RenderState();
 }
 
+void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
+  // Fade in
+  {
+    fade_end_millis = MillisecondsNow() + FADE_IN_MILLIS;
+    fade_duration = FADE_IN_MILLIS;
+    opacity_start = opacity;
+    opacity_end = 1.0f;
+  }
+
+  proper_noun_ranges.clear();
+
+  std::string who1 = who, content1 = content;
+  while ((content1.size() > 0 && (content1.back() == '\n' || content1.back() == '\r'))) content1.pop_back();
+  int idx = 0;
+  while ((idx + 1 < int(content1.size())) && (content1[idx] == ' ')) idx++;
+  content1 = content1.substr(idx);
+
+  printf("[ClosedCaption] OnFuncTalk([%s],[%s])\n", who1.c_str(), content1.c_str());
+
+  // Map back
+  {
+    bool mapped = false;
+    // 从英文找到中文原文
+    if (eng2chs_who.find(who1) != eng2chs_who.end() &&
+      eng2chs_content.find(content1) != eng2chs_content.end()) {
+      who1 = eng2chs_who[who1];
+      mapped = true;
+      content1 = eng2chs_content[content1];
+      printf("ENG --> CHS found!\n");
+      printf("                  remapped([%s],[%s])\n", who1.c_str(), content1.c_str());
+    }
+  }
+
+  int len = MultiByteToWideChar(CP_UTF8, 0, content1.c_str(), -1, NULL, NULL);
+  int len_who = MultiByteToWideChar(CP_UTF8, 0, who1.c_str(), -1, NULL, NULL);
+
+  wchar_t* wcontent = new wchar_t[len]; // Hopefully this will be enough!
+  wchar_t* wwho = new wchar_t[len_who];
+  MultiByteToWideChar(CP_UTF8, 0, content1.c_str(), -1, wcontent, len);
+  MultiByteToWideChar(CP_UTF8, 0, who1.c_str(), -1, wwho, len_who);
+
+  std::wstring w = wcontent, w1 = wwho;
+
+  speaker = w1;
+
+  delete wcontent;
+  delete wwho;
+
+  int ret = FindAlignmentFile(who1.c_str(), content1.c_str());
+  if (ret == -999 || ret == -998) {
+    millis2word.clear();
+    millis2word[std::make_pair(0.0f, 0.0f)] = w;
+    printf("[ClosedCaption] alignment file not found or is not okay. length=%lu\n", w.size());
+    caption_state = CAPTION_PLAYING_NO_TIMELINE;
+  }
+  else {
+    printf("[ClosedCaption] alignment file found\n");
+    caption_state = CAPTION_PLAYING;
+  }
+
+  // 无论找没找到对话文本、都标记关键字
+  FindKeywordsForHighlighting();
+}
+
+// Only used for testing
 int ClosedCaption::SetAlignmentFileByAudioID(int id) {
   int ret = -999;
   curr_story_idx = id;
@@ -373,6 +513,7 @@ int ClosedCaption::SetAlignmentFileByAudioID(int id) {
     buf = nullptr;
     start_millis = MillisecondsNow();
     ComputeBoundingBoxPerChar();
+    FindKeywordsForHighlighting();
     ret = true;
   }
   else {
@@ -383,24 +524,27 @@ int ClosedCaption::SetAlignmentFileByAudioID(int id) {
   if (ret != true) {
     printf("[SetAlignmentFileByAudioID] Input file not good, id=%d\n", id);
     ret = -998;
+    caption_state = CAPTION_PLAYING_NO_TIMELINE;
+  }
+  else {
+    caption_state = CAPTION_PLAYING;
   }
   return ret;
 }
 
 void ClosedCaption::LoadDummy() {
-  wchar_t s[] = L"蓬莱翻译组当真是十分美妙";
-  //proper_names[L"蓬莱翻译组"] = L"[péng lái fān yì zǔ] Penglai Translation Group (PTG)";
+  wchar_t s[] = L"Right mouse click to drag around; Right shift to toggle visibility";
 
   millis2word.clear();
   for (int i = 0; i < int(wcslen(s)); i++) {
-    const float t0 = i * 0.3f, t1 = t0 + 0.3f;
+    const float t0 = i * 0.1f, t1 = t0 + 0.1f;
     std::wstring this_one;
     this_one += s[i];
     millis2word[std::make_pair(t0, t1)] = this_one;
   }
-  start_millis = MillisecondsNow();
-  ComputeBoundingBoxPerChar();
-  FindKeywordsForHighlighting();
+  //start_millis = MillisecondsNow();
+  //ComputeBoundingBoxPerChar();
+  //FindKeywordsForHighlighting();
 }
 
 void ClosedCaption::FindKeywordsForHighlighting() {
@@ -534,10 +678,14 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
   printf("\n");
 #endif
   if (ch_idx != -999 && (ch_idx != last_highlight_idx)) {
+    std::wstring popup_txt = L"";
     // 是否与词典重合
     for (std::set<std::pair<int, int> >::iterator itr = proper_noun_ranges.begin(); itr != proper_noun_ranges.end(); itr++) {
       highlighted_range.first = -999;
       highlighted_range.second = 0;
+
+
+      // Will find all matches
       if (itr->first <= ch_idx && itr->first + itr->second > ch_idx) {
         const int offset = itr->first, len = itr->second;
         highlighted_range.first = offset;
@@ -546,13 +694,21 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
         std::wstring fulltext = GetFullLine();
         std::wstring key = fulltext.substr(itr->first, itr->second);
         std::wstring desc = proper_names[key];
-        std::wstring txt = desc;
-        g_hover_messagebox->SetText(txt, 250);
-        g_hover_messagebox->x = bb.left + this->x;
-        g_hover_messagebox->y = bb.top + FONT_SIZE + MOUSE_Y_DELTA + this->y;
+        std::wstring txt = L"【" + key + L"】：" + desc;
+        
+        if (popup_txt.size() > 0)
+          popup_txt += L"；";
+        popup_txt += txt;
 
-        break;
       }
+    }
+    if (popup_txt.size() > 0) {
+      g_hover_messagebox->SetText(popup_txt, 250);
+      g_hover_messagebox->x = bb.left + this->x;
+      g_hover_messagebox->y = bb.top + FONT_SIZE + MOUSE_Y_DELTA + this->y;
+    }
+    else {
+      g_hover_messagebox->Hide();
     }
   } else if (ch_idx == -999) {
     highlighted_range.first = -999;
@@ -563,6 +719,23 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
   is_hovered = IsMouseHover(mx, my);
 
   last_highlight_idx = ch_idx;
+}
+
+void ClosedCaption::ToggleVisibility() {
+  opacity_start = opacity;
+  fade_end_millis = MillisecondsNow() + FADE_IN_MILLIS;
+  fade_duration = FADE_IN_MILLIS;
+  if (IsVisible()) opacity_end = 1.0f;
+  else opacity_end = 0.0f;
+}
+
+void ClosedCaption::AutoPosition(int win_w, int win_h) {
+  RECT r = g_curr_dialogbox_rect;
+  int y = r.top + 5;
+  if (y > win_h - 32) y = win_h - 32;
+  int x = win_w / 2 - line_width / 2;
+  this->x = x;
+  this->y = y;
 }
 
 // ==========================================
