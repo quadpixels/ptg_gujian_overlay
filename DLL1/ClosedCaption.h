@@ -10,6 +10,8 @@
 #include <fstream>
 #include <d3d9.h>
 
+extern long long MillisecondsNow();
+
 struct RectCmp {
   bool operator()(const RECT& a, const RECT& b) const {
     if (a.top < b.top) return true;
@@ -36,8 +38,17 @@ struct CustomVertex {
 
 class ClosedCaption {
   public:
+
+    enum CaptionPlaybackState {
+      CAPTION_NOT_PLAYING,
+      CAPTION_PLAYING_NO_TIMELINE,
+      CAPTION_PLAYING,
+      CAPTION_PLAY_ENDED
+    };
+
     ClosedCaption();
     static int PADDING_LEFT, PADDING_TOP, MOUSE_Y_DELTA;
+    static int FADE_IN_MILLIS, FADE_OUT_MILLIS;
 
     std::map<std::pair<std::string, std::string>, std::set<int> > index; // (who, content) -> Index
 
@@ -183,60 +194,7 @@ class ClosedCaption {
 
     void LoadProperNamesList(const char* fn);
 
-    void OnFuncTalk(const char* who, const char* content) {
-
-      proper_noun_ranges.clear();
-
-      std::string who1 = who, content1 = content;
-      while ((content1.size() > 0 && (content1.back() == '\n' || content1.back() == '\r'))) content1.pop_back();
-      int idx = 0;
-      while ((idx + 1 < int(content1.size())) && (content1[idx] == ' ')) idx++;
-      content1 = content1.substr(idx);
-
-      printf("[ClosedCaption] OnFuncTalk([%s],[%s])\n", who1.c_str(), content1.c_str());
-
-      // Map back
-      {
-        bool mapped = false;
-        // 从英文找到中文原文
-        if (eng2chs_who.find(who1) != eng2chs_who.end() &&
-          eng2chs_content.find(content1) != eng2chs_content.end()) {
-          who1 = eng2chs_who[who1];
-          mapped = true;
-          content1 = eng2chs_content[content1];
-          printf("ENG --> CHS found!\n");
-          printf("                  remapped([%s],[%s])\n", who1.c_str(), content1.c_str());
-        }
-      }
-
-      int len = MultiByteToWideChar(CP_UTF8, 0, content1.c_str(), -1, NULL, NULL);
-      int len_who = MultiByteToWideChar(CP_UTF8, 0, who1.c_str(), -1, NULL, NULL);
-
-      wchar_t* wcontent = new wchar_t[len]; // Hopefully this will be enough!
-      wchar_t* wwho = new wchar_t[len_who];
-      MultiByteToWideChar(CP_UTF8, 0, content1.c_str(), -1, wcontent, len);
-      MultiByteToWideChar(CP_UTF8, 0, who1.c_str(), -1, wwho, len_who);
-
-      std::wstring w = wcontent, w1 = wwho;
-
-      speaker = w1;
-
-      delete wcontent;
-      delete wwho;
-
-      int ret = FindAlignmentFile(who1.c_str(), content1.c_str());
-      if (ret == -999 || ret == -998) {
-        millis2word.clear();
-        millis2word[std::make_pair(0.0f, 0.0f)] = w;
-        printf("[ClosedCaption] alignment file not found or is not okay. length=%lu\n", w.size());
-      }
-      else {
-        printf("[ClosedCaption] alignment file found\n");
-      }
-
-      // 无论找没找到都查找关键字
-      FindKeywordsForHighlighting();
-    }
+    void OnFuncTalk(const char* who, const char* content);
 
     // Returns status code
     int SetAlignmentFileByAudioID(int id);
@@ -257,6 +215,8 @@ class ClosedCaption {
     void ComputeBoundingBoxPerChar();
 
     void Draw();
+
+    void Update();
 
     // (idx, length)
     std::pair<int, int> highlighted_range;
@@ -283,12 +243,11 @@ class ClosedCaption {
       millis2word.clear();
     }
 
-    void ToggleVisibility() {
-      visible = !visible;
-    }
+    void ToggleVisibility();
 
     bool IsVisible() {
-      return visible;
+      if (is_hovered) return true;
+      else return (opacity > 0.0f);
     }
 
     bool IsMouseHover(int mx, int my) {
@@ -301,9 +260,12 @@ class ClosedCaption {
 
     bool IsDragging() { return is_dragging; }
 
+    void AutoPosition(int win_w, int win_h);
 
   private:
-    bool visible;
+    float opacity, opacity_end, opacity_start;
+    long long fade_end_millis, fade_duration;
+    CaptionPlaybackState caption_state;
     bool is_hovered, is_dragging;
     int last_mainstory;
     long long start_millis;
@@ -314,6 +276,11 @@ class ClosedCaption {
 
     int GetVisibleWidth() { return this->line_width; }
     int GetVisibleHeight() { return this->visible_height; }
+
+    float GetOpacity() {
+      if (is_hovered) return 1.0f;
+      else return opacity;
+    }
 
     RECT FindBbByCharIdx(int idx) {
       RECT ret;

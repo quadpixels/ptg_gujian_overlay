@@ -10,6 +10,8 @@
 #include "ClosedCaption.h"
 #include "config.h"
 
+const bool DEBUG_DIALOG_BOX = true;
+
 extern ClosedCaption g_ClosedCaption;
 extern void DrawBorderedRectangle(int x, int y, int w, int h, D3DCOLOR bkcolor, D3DCOLOR bordercolor);
 extern CRITICAL_SECTION g_critsect_rectlist;
@@ -17,6 +19,7 @@ extern LPD3DXFONT g_font;
 extern IDirect3DSurface9* g_pSurfaceCopy;
 extern LPD3DXBUFFER g_pSurfaceBuf;
 extern PtgOverlayConfig g_config;
+extern bool g_screenshot_flag;
 
 extern void BackupD3D9RenderState();
 extern void RestoreD3D9RenderState();
@@ -55,6 +58,7 @@ DWORD WINAPI MyThreadFunction(LPVOID lpParam);
 void DoDetect(unsigned char* chr, const int len);
 void DoCheckMatchesDisappear(unsigned char* chr, const int len);
 float g_ui_scale_factor = 1.0f, g_ui_scale_prev = 1.0f;
+int g_last_w = 0, g_last_h = 0;
 
 const bool IMPATIENT = true;
 const int CACHE_SIZE_LIMIT = 1;
@@ -66,20 +70,52 @@ cv::Size g_boxfilter_size = cv::Size(4, 4);
 float g_ccoeff_thresh = 0.7f;
 int g_last_scene_id = -999;
 
+bool g_dialog_box_gone = false;
+std::map<std::pair<int, int>, RECT > DIALOG_BOX_COORDS =
+{
+  { { 1024, 720 }, { 173, 529, 812, 643 } },
+  { { 1024, 768 }, { 173, 554, 812, 669 } },
+  { { 1280, 720 }, { 258, 550, 962, 681 } },
+  { { 1280, 800 }, { 216, 611, 1007, 757 } },
+  { { 1280, 1024}, { 216, 723, 1007, 869 } },
+  { { 1366, 768 }, { 274, 587, 1060, 727 } },
+  { { 1440, 900 }, { 243, 688, 1127, 851 } },
+  { { 1600, 900 }, { 323, 688, 1209, 851 } },
+  { { 1680, 1050}, { 284, 802, 1350, 993} },
+  { { 1920, 1080}, { 388, 825, 1463, 1022} },
+};
+RECT g_curr_dialogbox_rect;
+
 void DetermineUIScaleFactor(const int w, const int h) {
+  // Determine UI Scale Factor
   if (w == 1280 && h == 1024) g_ui_scale_factor = 1.0f;
+  else if (w == 1024) g_ui_scale_factor = 0.8f;
   else {
     g_ui_scale_factor = 1.0f * h / 800;
     if (g_ui_scale_factor < 0.8f) g_ui_scale_factor = 0.8f;
   }
 
   if (g_ui_scale_factor != g_ui_scale_prev) {
-
-    g_match_cache.clear();
-
     printf("[DetermineUIScaleFactor] %d x %d, scale_factor=%g\n", w, h, g_ui_scale_factor);
     g_ui_scale_prev = g_ui_scale_factor;
   }
+
+  if (g_last_w != w || g_last_h != h)
+    g_match_cache.clear();
+
+  // Determine location of dialog box
+  std::pair<int, int> key = std::make_pair(w, h);
+  if (DIALOG_BOX_COORDS.find(key) != DIALOG_BOX_COORDS.end()) {
+    g_curr_dialogbox_rect = DIALOG_BOX_COORDS[key];
+  }
+  else {
+    g_curr_dialogbox_rect = DIALOG_BOX_COORDS.rbegin()->second;
+  }
+
+  g_last_w = w; g_last_h = h;
+
+  // Automatically position the overlay bar
+  g_ClosedCaption.AutoPosition(w, h);
 }
 
 bool RectEqual(const RECT& r1, const RECT& r2) {
@@ -157,8 +193,14 @@ cv::Mat MyCrop(const cv::Mat in, RECT range) {
   return ret;
 }
 
+bool IsDialogBoxMaybeGone() {
+  return g_dialog_box_gone;
+}
+
 // About half second using debug library
 void DoDetect(unsigned char* chr, const int len) {
+  const bool VERBOSE = false;
+
   std::vector<struct MatchResult> next_rect;
   printf(">>> [DoDetect]\n");
   //g_surface_mat = cv::Mat(w, h, CV_8UC4, ch).t();
@@ -166,6 +208,55 @@ void DoDetect(unsigned char* chr, const int len) {
   cv::Mat raw_data_mat(1, len, CV_8UC1, chr);
   cv::Mat tmp_orig = cv::imdecode(raw_data_mat, cv::IMREAD_COLOR);
   raw_data_mat.release();
+
+  // Update dialog box presence
+  {
+    // Generate canny and return
+    cv::Mat canny_orig;
+    cv::Canny(tmp_orig, canny_orig, g_canny_thresh1, g_canny_thresh2);
+    
+
+    int sc_outer = 0, sc_inner = 0;
+    int R = 5; // probe radius
+    const int x0 = g_curr_dialogbox_rect.left, y0 = g_curr_dialogbox_rect.top,
+      x1 = g_curr_dialogbox_rect.right, y1 = g_curr_dialogbox_rect.bottom;
+
+    // To be safe with testbench
+    if (canny_orig.rows > y1 + 2 + R && canny_orig.cols > x1 + 2 + R) {
+      for (int x = x0; x <= x1; x++) {
+        for (int y = y0 - 2; y >= y0 - 2 - R; y--) {
+          if (canny_orig.at<char>(y, x) != 0) {
+            sc_outer++;
+          }
+        }
+        for (int y = y0 + 2; y <= y0 + 2 + R; y++) {
+          if (canny_orig.at<char>(y, x) != 0) {
+            sc_inner++;
+          }
+        }
+
+        for (int y = y1 - 2; y >= y1 - 2 - R; y--) {
+          if (canny_orig.at<char>(y, x) != 0) {
+            sc_inner++;
+          }
+        }
+        for (int y = y1 + 2; y <= y1 + 2 + R; y++) {
+          if (canny_orig.at<char>(y, x) != 0) {
+            sc_outer++;
+          }
+        }
+      }
+    }
+
+    printf("sc_outer=%d sc_inner=%d\n", sc_outer, sc_inner);
+
+    if (sc_outer > 1.25 * sc_inner) {
+      g_dialog_box_gone = false;
+    }
+    else {
+      g_dialog_box_gone = true;
+    }
+  }
 
   std::unordered_map<float, cv::Mat*> resized;
 
@@ -258,7 +349,9 @@ void DoDetect(unsigned char* chr, const int len) {
       cv::minMaxLoc(result, &min_val, &max_val, &min_loc, &max_loc, cv::Mat());
       min_loc.x += c.left; min_loc.y += c.top;
       max_loc.x += c.left; max_loc.y += c.top;
-      printf("Template[%d], using cache\n", i);
+
+      if (VERBOSE)
+        printf("Template[%d], using cache\n", i);
     } else { // Full match
       cv::matchTemplate(*r, m, result, mode);
       cv::minMaxLoc(result, &min_val, &max_val, &min_loc, &max_loc, cv::Mat());
@@ -286,15 +379,23 @@ void DoDetect(unsigned char* chr, const int len) {
 
     // Divide by scale gives coordinate at 100% UI scale
     // Multiplication by g_ui_scale_factor gives coordinates on rendered frame
-    wprintf(L"   [DoDetect] %ls [Group %d] scale=%g, r=(%dx%d), Min Loc:(%d,%d)->(%d,%d); min&max val:(%g,%g) found=%d\n",
-      g_templates[i]->caption.c_str(), 
-      g_templates[i]->group_id,
-      g_templates[i]->scale,
-      r->cols, r->rows,
-      ans.x, ans.y,
-      int(ans.x / scale * g_ui_scale_factor), int(ans.y / scale * g_ui_scale_factor),
-      min_val, max_val,
-      found);
+    if (VERBOSE) {
+      wprintf(L"   [DoDetect] %ls [Group %d] scale=%g, r=(%dx%d), Min Loc:(%d,%d)->(%d,%d); min&max val:(%g,%g) found=%d\n",
+        g_templates[i]->caption.c_str(),
+        g_templates[i]->group_id,
+        g_templates[i]->scale,
+        r->cols, r->rows,
+        ans.x, ans.y,
+        int(ans.x / scale * g_ui_scale_factor), int(ans.y / scale * g_ui_scale_factor),
+        min_val, max_val,
+        found);
+    }
+    else {
+      if (in_cache) printf("C");
+      else if (found) printf("+");
+      else printf(".");
+      fflush(stdout);
+    }
 
     if (found == true) {
       RECT r_scaled, r_orig;
@@ -579,6 +680,12 @@ void DrawHighlightRects() {
 
     DrawBorderedRectangle(d.left, d.top, (d.right - d.left), (d.bottom - d.top), D3DCOLOR_ARGB(128, 102, 52, 35), D3DCOLOR_ARGB(255, 255, 255, 255));
     g_font->DrawTextW(0, caption.c_str(), caption.size(), &d, DT_NOCLIP, D3DCOLOR_ARGB(255, 255, 255, 255));
+  }
+
+  if (DEBUG_DIALOG_BOX) {
+    RECT x = g_curr_dialogbox_rect;
+    if (IsDialogBoxMaybeGone() == false)
+      DrawBorderedRectangle(x.left, x.top, (x.right - x.left), (x.bottom - x.top), D3DCOLOR_ARGB(128, 32, 255, 32), D3DCOLOR_ARGB(128, 32, 255, 32));
   }
 
   RestoreD3D9RenderState();
