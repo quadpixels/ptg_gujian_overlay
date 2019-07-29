@@ -105,6 +105,11 @@ typedef struct
   char m_comment[MZ_ZIP_MAX_ARCHIVE_FILE_COMMENT_SIZE];
 } mz_zip_archive_file_stat;
 
+// PTG: Add declaration of mz_zip_reader_init_mem here
+mz_bool mz_zip_reader_init(mz_zip_archive *pZip, mz_uint64 size, mz_uint32 flags);
+mz_bool mz_zip_reader_init_mem(mz_zip_archive *pZip, const void *pMem, size_t size, mz_uint32 flags);
+size_t mz_zip_mem_read_func(void *pOpaque, mz_uint64 file_ofs, void *pBuf, size_t n);
+
 mz_bool mz_zip_reader_init_file(mz_zip_archive *pZip, const char *pFilename, mz_uint32 flags);
 mz_uint mz_zip_reader_get_num_files(mz_zip_archive *pZip);
 mz_bool mz_zip_reader_file_stat(mz_zip_archive *pZip, mz_uint file_index, mz_zip_archive_file_stat *pStat);

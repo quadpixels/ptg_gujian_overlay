@@ -520,6 +520,8 @@ typedef struct
 
   mz_zip_internal_state *m_pState;
 
+  void* m_pInputFileBuffer; // PTG: For reading from memory buffer
+
 } mz_zip_archive;
 
 typedef enum
@@ -3178,7 +3180,7 @@ mz_bool mz_zip_reader_init(mz_zip_archive *pZip, mz_uint64 size, mz_uint32 flags
   return MZ_TRUE;
 }
 
-static size_t mz_zip_mem_read_func(void *pOpaque, mz_uint64 file_ofs, void *pBuf, size_t n)
+size_t mz_zip_mem_read_func(void *pOpaque, mz_uint64 file_ofs, void *pBuf, size_t n)
 {
   mz_zip_archive *pZip = (mz_zip_archive *)pOpaque;
   size_t s = (file_ofs >= pZip->m_archive_size) ? 0 : (size_t)MZ_MIN(pZip->m_archive_size - file_ofs, n);
