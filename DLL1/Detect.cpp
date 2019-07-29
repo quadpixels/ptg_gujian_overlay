@@ -20,9 +20,11 @@ extern IDirect3DSurface9* g_pSurfaceCopy;
 extern LPD3DXBUFFER g_pSurfaceBuf;
 extern PtgOverlayConfig g_config;
 extern bool g_screenshot_flag;
+extern int FONT_SIZE;
 
 extern void BackupD3D9RenderState();
 extern void RestoreD3D9RenderState();
+extern void InitFont(int size); // in dll1.cpp
 
 // TODO: Detect whether dialog box exists
 // TODO: greyscale ??
@@ -98,10 +100,8 @@ void DetermineUIScaleFactor(const int w, const int h) {
   if (g_ui_scale_factor != g_ui_scale_prev) {
     printf("[DetermineUIScaleFactor] %d x %d, scale_factor=%g\n", w, h, g_ui_scale_factor);
     g_ui_scale_prev = g_ui_scale_factor;
+    InitFont(FONT_SIZE * g_ui_scale_factor);
   }
-
-  if (g_last_w != w || g_last_h != h)
-    g_match_cache.clear();
 
   // Determine location of dialog box
   std::pair<int, int> key = std::make_pair(w, h);
@@ -112,10 +112,13 @@ void DetermineUIScaleFactor(const int w, const int h) {
     g_curr_dialogbox_rect = DIALOG_BOX_COORDS.rbegin()->second;
   }
 
-  g_last_w = w; g_last_h = h;
+  // When we have dialog box RECT, apply it to AutoPosition
+  if (g_last_w != w || g_last_h != h) {
+    g_match_cache.clear();
+    g_ClosedCaption.AutoPosition(w, h);
+  }
 
-  // Automatically position the overlay bar
-  g_ClosedCaption.AutoPosition(w, h);
+  g_last_w = w; g_last_h = h;
 }
 
 bool RectEqual(const RECT& r1, const RECT& r2) {
