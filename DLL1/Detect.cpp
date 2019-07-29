@@ -10,7 +10,7 @@
 #include "ClosedCaption.h"
 #include "config.h"
 
-const bool DEBUG_DIALOG_BOX = true;
+bool DEBUG_DIALOG_BOX = true;
 
 extern ClosedCaption g_ClosedCaption;
 extern void DrawBorderedRectangle(int x, int y, int w, int h, D3DCOLOR bkcolor, D3DCOLOR bordercolor);
@@ -19,7 +19,7 @@ extern LPD3DXFONT g_font;
 extern IDirect3DSurface9* g_pSurfaceCopy;
 extern LPD3DXBUFFER g_pSurfaceBuf;
 extern PtgOverlayConfig g_config;
-extern bool g_screenshot_flag;
+extern bool g_f11_flag;
 extern int FONT_SIZE;
 
 extern void BackupD3D9RenderState();

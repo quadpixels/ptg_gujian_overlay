@@ -20,6 +20,10 @@ extern mz_zip_archive g_archive_dialog_aligned;
 extern RECT g_curr_dialogbox_rect; // Detect.cpp
 extern float g_ui_scale_factor;
 
+std::wstring g_header1 = L"ptg>";
+std::wstring g_header2 = L"   >";
+
+
 struct MyD3D9RenderState {
   DWORD alpha_blend_enable, blend_op, blend_op_alpha, src_blend, dest_blend, lighting, cull_mode;
   IDirect3DSurface9* pDsv;
@@ -128,13 +132,15 @@ long long g_last_dialogbox_present_millis = 0;
 ClosedCaption::ClosedCaption() { 
   opacity_end = 1.0f;
   opacity = 1.0f;
-  fade_end_millis = MillisecondsNow() + FADE_IN_MILLIS;
+  fade_end_millis = MillisecondsNow() + FADE_IN_MILLIS; // Keep this info for 5 seconds
   fade_duration = FADE_IN_MILLIS;
 
   line_width = 640;
   visible_height = 16;
   x = 2;
   y = 29;
+
+  is_debug = false;
 
   LoadDummy();
 }
@@ -148,7 +154,8 @@ int ClosedCaption::GuessNextAudioID(int id) {
 std::wstring ClosedCaption::GetCurrLine() {
   const long long curr_millis = MillisecondsNow();
   float elapsed = (curr_millis - start_millis) / 1000.0f;
-  std::wstring ret = speaker + L"：";
+  std::wstring ret = speaker;
+  if (ret.size() > 0) ret += L"：";
   for (std::map<std::pair<float, float>, std::wstring>::iterator itr =
     millis2word.begin(); itr != millis2word.end(); itr++) {
     if (itr->first.first < elapsed)
@@ -159,7 +166,8 @@ std::wstring ClosedCaption::GetCurrLine() {
 }
 
 std::wstring ClosedCaption::GetFullLine() {
-  std::wstring ret = speaker + L"：";
+  std::wstring ret = speaker;
+  if (ret.size() > 0) ret += L"：";
   for (std::map<std::pair<float, float>, std::wstring>::iterator itr =
     millis2word.begin(); itr != millis2word.end(); itr++) {
     ret += itr->second;
@@ -180,14 +188,14 @@ void ClosedCaption::ComputeBoundingBoxPerChar() {
     wchar_t msg[1024];
 
     // Header
-    if (i == 0) wsprintf(msg, L">");
-    else wsprintf(msg, L">");
+    if (i == 0) wsprintf(msg, g_header1.c_str());
+    else wsprintf(msg, g_header2.c_str());
     g_font->DrawTextW(NULL, msg, wcslen(msg), &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
 
     int last_x = rect.right;
-    if (i == 0) wsprintf(msg, L">%ls", s[i].c_str());
-    else wsprintf(msg, L">%ls", s[i].c_str());
-    const int HEADER_LEN = 1;
+    if (i == 0) wsprintf(msg, L"%ls%ls", g_header1.c_str(), s[i].c_str());
+    else wsprintf(msg, L"%ls%ls", g_header2.c_str(), s[i].c_str());
+    const int HEADER_LEN = int(g_header1.size());
     for (int j = HEADER_LEN; j < wcslen(msg); j++) {
       g_font->DrawTextW(0, msg, j + 1, &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
       const int curr_x = rect.right;
@@ -247,7 +255,7 @@ void ClosedCaption::do_DrawHighlightedProperNouns(RECT rect_header, RECT rect, c
       //printf("Curr Segment: (lb1,ub1)=(%d,%d)\n", lb1, ub1);
       std::wstring preceding = line.substr(0, lb_vis - lb);
       std::wstring content = line.substr(lb_vis, ub_vis - lb_vis + 1);
-      std::wstring teststr = L">" + preceding;
+      std::wstring teststr = g_header1 + preceding;
       g_font->DrawTextW(NULL, teststr.c_str(), teststr.size(), &rect_header1, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
       rect1.left += rect_header1.right - rect_header1.left;
       g_font->DrawTextW(NULL, content.c_str(), int(content.size()), &rect1, DT_NOCLIP, color);
@@ -316,7 +324,10 @@ void ClosedCaption::Update() {
   }
 
   // Update Opacity
-  if (millis < fade_end_millis) {
+  if (millis < fade_end_millis - fade_duration) {
+    opacity = opacity_start;
+  }
+  else if (millis < fade_end_millis) {
     float completion = 1.0f - (fade_end_millis - millis) * 1.0f / fade_duration;
     if (completion < 0.0f) {
       completion = 0.0f;
@@ -348,13 +359,18 @@ void ClosedCaption::Draw() {
 
   // Border?
   {
-    D3DCOLOR bkcolor = D3DCOLOR_ARGB(int(128 * o), 102, 52, 35), bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 255, 255);
+    D3DCOLOR bkcolor = D3DCOLOR_ARGB(int(128 * o), 102, 52, 35), bordercolor = D3DCOLOR_ARGB(int(40 * o), 255, 255, 255);
     if (is_dragging && is_hovered) {
       bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 32, 32);
     } else if (is_hovered) {
       bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 255, 0);
     }
-    DrawBorderedRectangle(x, y, 90 + this->line_width, s.size() * int(FONT_SIZE * g_ui_scale_factor) + 5, bkcolor, bordercolor);
+
+    std::wstring probe = g_header1 + L"--";
+    g_font->DrawTextW(NULL, probe.c_str(), probe.size(), &rect_header, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
+    const int pad_left = rect_header.right - rect_header.left;
+
+    DrawBorderedRectangle(x, y, pad_left + this->line_width, s.size() * int(FONT_SIZE * g_ui_scale_factor) + 5, bkcolor, bordercolor);
     visible_height = s.size() * int(FONT_SIZE * g_ui_scale_factor) + 5;
   }
 
@@ -368,18 +384,18 @@ void ClosedCaption::Draw() {
     std::wstring msg;
 
     // Measure header width
-    if (i == 0) msg = L">";
-    else msg = L">";
+    if (i == 0) msg = g_header1;
+    else msg = g_header2;
     g_font->DrawTextW(NULL, msg.c_str(), msg.size(), &rect_header, DT_CALCRECT, D3DCOLOR_ARGB(int(255 * o), 255, 255, 255));
 
     // Draw full text
-    if (i == 0) msg = L">" + s[i];
-    else msg = L">" + s[i];
-    D3DCOLOR color = D3DCOLOR_ARGB(int(150 * o), 150, 150, 150);
+    if (i == 0) msg = g_header1 + s[i];
+    else msg = g_header2 + s[i];
+    D3DCOLOR color = D3DCOLOR_ARGB(int(224 * o), 192, 192, 192);
     g_font->DrawTextW(0, msg.c_str(), msg.size(), &rect, DT_NOCLIP, color);
 
     // Draw proper nouns that are not highlighted
-    do_DrawHighlightedProperNouns(rect_header, rect, offset, s[i], D3DCOLOR_ARGB(int(150 * o), 200, 200, 150));
+    do_DrawHighlightedProperNouns(rect_header, rect, offset, s[i], D3DCOLOR_ARGB(int(224 * o), 200, 200, 150));
 
     // Draw current text
     if (i < c.size()) {
@@ -411,6 +427,22 @@ void ClosedCaption::Draw() {
 
   // 恢复先前的渲染状态
   RestoreD3D9RenderState();
+}
+
+// TODO
+std::wstring RemoveEscapeSequence(const std::wstring& x) {
+  std::wstring ret;
+  bool in_esc_seq = false;
+  for (int i = 0; i<int(x.size()); i++) {
+    wchar_t ch = x[i];
+    if (ch == L'*') {
+      if (!in_esc_seq) i++;
+
+      in_esc_seq = !in_esc_seq;
+    }
+    else ret.push_back(ch);
+  }
+  return ret;
 }
 
 void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
@@ -511,9 +543,10 @@ void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
   delete wwho;
 
   int ret = FindAlignmentFile(who1.c_str(), content1.c_str());
+
   if (ret == -999 || ret == -998) {
     millis2word.clear();
-    millis2word[std::make_pair(0.0f, 0.0f)] = w;
+    millis2word[std::make_pair(0.0f, 0.0f)] = RemoveEscapeSequence(w);
     printf("[ClosedCaption] alignment file not found or is not okay. length=%lu\n", w.size());
     caption_state = CAPTION_PLAYING_NO_TIMELINE;
   }
@@ -583,14 +616,14 @@ int ClosedCaption::SetAlignmentFileByAudioID(int id) {
     delete buf;
     buf = nullptr;
     start_millis = MillisecondsNow();
-    ret = true;
+    ret = 1;
   }
   else {
     printf("[SetAlignmentFileByAudioID] Cannot find [%s] in zipped file\n", path);
   }
 #endif
 
-  if (ret != true) {
+  if (ret != 1) {
     printf("[SetAlignmentFileByAudioID] Input file not good, id=%d\n", id);
     ret = -998;
     caption_state = CAPTION_PLAYING_NO_TIMELINE;
@@ -611,7 +644,9 @@ void ClosedCaption::LoadDummy() {
     this_one += s[i];
     millis2word[std::make_pair(t0, t1)] = this_one;
   }
+  
   //start_millis = MillisecondsNow();
+  caption_state = CAPTION_PLAYING_NO_TIMELINE;
   //ComputeBoundingBoxPerChar();
   //FindKeywordsForHighlighting();
 }
@@ -724,7 +759,7 @@ void ClosedCaption::LoadProperNamesList(const char* fn) {
 
         proper_names[wsterm] = wsdefn;
         num_entries++;
-        wprintf(L"%ls->%ls\n", wsterm.c_str(), wsdefn.c_str());
+        //wprintf(L"%ls->%ls\n", wsterm.c_str(), wsdefn.c_str());
       }
     }
     f.close();

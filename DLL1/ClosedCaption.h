@@ -241,7 +241,7 @@ class ClosedCaption {
     float opacity, opacity_end, opacity_start;
     long long fade_end_millis, fade_duration;
     CaptionPlaybackState caption_state;
-    bool is_hovered, is_dragging;
+    bool is_hovered, is_dragging, is_debug;
 
     std::set<int> all_story_ids;
 
