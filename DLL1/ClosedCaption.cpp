@@ -18,6 +18,7 @@ IDirect3DVertexBuffer9* g_vert_buf;
 IDirect3DStateBlock9* g_pStateBlock;
 extern mz_zip_archive g_archive_dialog_aligned;
 extern RECT g_curr_dialogbox_rect; // Detect.cpp
+extern float g_ui_scale_factor;
 
 struct MyD3D9RenderState {
   DWORD alpha_blend_enable, blend_op, blend_op_alpha, src_blend, dest_blend, lighting, cull_mode;
@@ -138,6 +139,12 @@ ClosedCaption::ClosedCaption() {
   LoadDummy();
 }
 
+int ClosedCaption::GuessNextAudioID(int id) {
+  std::set<int>::iterator itr = all_story_ids.upper_bound(id);
+  if (itr == all_story_ids.end()) return id + 1;
+  else return *itr;
+}
+
 std::wstring ClosedCaption::GetCurrLine() {
   const long long curr_millis = MillisecondsNow();
   float elapsed = (curr_millis - start_millis) / 1000.0f;
@@ -169,7 +176,7 @@ void ClosedCaption::ComputeBoundingBoxPerChar() {
 
   for (int i = 0; i<int(s.size()); i++) {
     RECT rect, rect_header;
-    rect.left = left; rect.top = y0 + i * (1 + FONT_SIZE);
+    rect.left = left; rect.top = y0 + i * (1 + int(FONT_SIZE * g_ui_scale_factor));
     wchar_t msg[1024];
 
     // Header
@@ -298,6 +305,16 @@ void ClosedCaption::Update() {
     }
   }
 
+  // Fading in/out when playback is done
+  if (caption_state == CAPTION_NOT_PLAYING) {
+    if (is_hovered || is_dragging) {
+      this->FadeIn();
+    }
+    else {
+      this->FadeOut();
+    }
+  }
+
   // Update Opacity
   if (millis < fade_end_millis) {
     float completion = 1.0f - (fade_end_millis - millis) * 1.0f / fade_duration;
@@ -337,8 +354,8 @@ void ClosedCaption::Draw() {
     } else if (is_hovered) {
       bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 255, 0);
     }
-    DrawBorderedRectangle(x, y, 90 + this->line_width, s.size() * FONT_SIZE + 5, bkcolor, bordercolor);
-    visible_height = s.size() * FONT_SIZE + 5;
+    DrawBorderedRectangle(x, y, 90 + this->line_width, s.size() * int(FONT_SIZE * g_ui_scale_factor) + 5, bkcolor, bordercolor);
+    visible_height = s.size() * int(FONT_SIZE * g_ui_scale_factor) + 5;
   }
 
   const int CHAR_PER_SEC = 20; // 是否渐出
@@ -346,7 +363,7 @@ void ClosedCaption::Draw() {
 
   for (int i = 0; i < s.size(); i++) {
     rect.left = x;
-    rect.top = y+PADDING_TOP + i * (1 + FONT_SIZE);
+    rect.top = y+PADDING_TOP + i * (1 + int(FONT_SIZE * g_ui_scale_factor) );
 
     std::wstring msg;
 
@@ -399,10 +416,12 @@ void ClosedCaption::Draw() {
 void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
   // Fade in
   {
-    fade_end_millis = MillisecondsNow() + FADE_IN_MILLIS;
+    long long millis = MillisecondsNow();
+    fade_end_millis = millis + FADE_IN_MILLIS;
     fade_duration = FADE_IN_MILLIS;
     opacity_start = opacity;
     opacity_end = 1.0f;
+    g_last_dialogbox_present_millis = millis;
   }
 
   proper_noun_ranges.clear();
@@ -419,13 +438,60 @@ void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
   {
     bool mapped = false;
     // 从英文找到中文原文
-    if (eng2chs_who.find(who1) != eng2chs_who.end() &&
-      eng2chs_content.find(content1) != eng2chs_content.end()) {
-      who1 = eng2chs_who[who1];
+
+    // 这里有个小型碧油唧：
+    // 查story_idx，所依赖的是中文文本。但是为了应对“一条英文对应多条中文”的情况，需要同时用到story_idx与英文。
+    // 那么，这里就有了鸡生蛋&蛋生鸡的问题。依赖关系如下：
+    //
+    // OnFuncTalk ----->  (who_eng, content_eng)  ---+
+    //                                               |---> （who_chs, content_chs) ---> story_idx
+    //                      story_idx ---------------+
+    //
+    // 现在看到的curr_story_idx是上一句所对应的idx；现在用于取得下一个story_idx的方法是从all_story_ids中找其接下来的元素。
+    //
+    int next_story_idx = GuessNextAudioID(curr_story_idx);
+
+    // Attempt 1: Use current Story Idx
+    std::pair<std::string, int> wkey1 = std::make_pair(who1, next_story_idx),
+      wkey2 = std::make_pair(who1, -999),
+      ckey1 = std::make_pair(content1, next_story_idx),
+      ckey2 = std::make_pair(content1, -999);
+
+    std::string who1_cand, content1_cand;
+    int who_matchid = -999, content_matchid = -999;
+
+    bool who_mapped = false, content_mapped = false;
+    // Name of speaker ...
+    if (eng2chs_who.find(wkey1) != eng2chs_who.end()) {
+      who1_cand = eng2chs_who[wkey1];
+      who_matchid = 1;
+      who_mapped = true;
+    }
+    else if (eng2chs_who.find(wkey2) != eng2chs_who.end()) {
+      who1_cand = eng2chs_who[wkey2];
+      who_matchid = 2;
+      who_mapped = true;
+    }
+
+    // Content ...
+    if (eng2chs_content.find(ckey1) != eng2chs_content.end()) {
+      content1_cand = eng2chs_content[ckey1];
+      content_matchid = 1;
+      content_mapped = true;
+    }
+    else if (eng2chs_content.find(ckey2) != eng2chs_content.end()) {
+      content1_cand = eng2chs_content[ckey2];
+      content_matchid = 2;
+      content_mapped = true;
+    }
+    
+    if (who_mapped && content_mapped) {
+      who1 = who1_cand;
+      content1 = content1_cand;
       mapped = true;
-      content1 = eng2chs_content[content1];
-      printf("ENG --> CHS found!\n");
-      printf("                  remapped([%s],[%s])\n", who1.c_str(), content1.c_str());
+      printf("ENG --> CHS found!, Match cases=(%d,%d), remapped([%s],[%s])\n",
+        who_matchid, content_matchid,
+        who1.c_str(), content1.c_str());
     }
   }
 
@@ -458,9 +524,14 @@ void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
 
   // 无论找没找到对话文本、都标记关键字
   FindKeywordsForHighlighting();
+  ComputeBoundingBoxPerChar();
 }
 
-// Only used for testing
+// The caller should also call these two functions after calling SetAlignmentFileByAudioID:
+//
+//  1. ComputeBoundingBoxPerChar();
+//  2. FindKeywordsForHighlighting();
+//
 int ClosedCaption::SetAlignmentFileByAudioID(int id) {
   int ret = -999;
   curr_story_idx = id;
@@ -512,8 +583,6 @@ int ClosedCaption::SetAlignmentFileByAudioID(int id) {
     delete buf;
     buf = nullptr;
     start_millis = MillisecondsNow();
-    ComputeBoundingBoxPerChar();
-    FindKeywordsForHighlighting();
     ret = true;
   }
   else {
@@ -533,7 +602,7 @@ int ClosedCaption::SetAlignmentFileByAudioID(int id) {
 }
 
 void ClosedCaption::LoadDummy() {
-  wchar_t s[] = L"Right mouse click to drag around; Right shift to toggle visibility";
+  wchar_t s[] = L"Hover/Right shift to reveal; Right mouse click to drag around";
 
   millis2word.clear();
   for (int i = 0; i < int(wcslen(s)); i++) {
@@ -578,6 +647,46 @@ void ClosedCaption::FindKeywordsForHighlighting() {
     printf("%d", int(proper_noun_mask[i]));
   }
   printf("\n");
+}
+
+// CSV分隔，[ID, Char_CHS, CHS, Char_ENG, ENG_Rev]
+void ClosedCaption::LoadEngChsParallelText(const char* fn) {
+  std::ifstream f(fn);
+  int num_entries = 0;
+  if (f.good()) {
+    while (f.good()) {
+      int id; std::string char_chs, chs, char_eng, eng_rev;
+      std::string line, x;
+      std::getline(f, line);
+      std::vector<std::string> sp;
+
+      for (int i = 0; i < int(line.size()); i++) {
+        if (line[i] == '\t') { // UTF-8里的 \t 也是 0x09
+          sp.push_back(x); x = "";
+        }
+        else {
+          x.push_back(line[i]);
+        }
+      }
+      if (x.size() > 0) sp.push_back(x);
+
+      if (sp.size() >= 5) {
+        id = atoi(sp[0].c_str());
+        char_chs = sp[1];
+        chs = sp[2];
+        char_eng = sp[3];
+        eng_rev = sp[4];
+        eng2chs_who[std::make_pair(char_eng, id)] = char_chs;
+        eng2chs_who[std::make_pair(char_eng, -999)] = char_chs; // For non-sequence dialogs
+        eng2chs_content[std::make_pair(eng_rev, id)] = chs;
+        eng2chs_content[std::make_pair(eng_rev, -999)] = chs;
+        num_entries++;
+        //printf("[%s]->[%s], [%s]->[%s]\n", char_eng.c_str(), char_chs.c_str(), eng_rev.c_str(), chs.c_str());
+      }
+    }
+    f.close();
+  }
+  printf("%d entries in parallel text [%s] scanned\n", num_entries, fn);
 }
 
 void ClosedCaption::LoadProperNamesList(const char* fn) {
@@ -705,7 +814,7 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
     if (popup_txt.size() > 0) {
       g_hover_messagebox->SetText(popup_txt, 250);
       g_hover_messagebox->x = bb.left + this->x;
-      g_hover_messagebox->y = bb.top + FONT_SIZE + MOUSE_Y_DELTA + this->y;
+      g_hover_messagebox->y = bb.top + int(FONT_SIZE * g_ui_scale_factor) + MOUSE_Y_DELTA + this->y;
     }
     else {
       g_hover_messagebox->Hide();
@@ -722,20 +831,41 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
 }
 
 void ClosedCaption::ToggleVisibility() {
-  opacity_start = opacity;
-  fade_end_millis = MillisecondsNow() + FADE_IN_MILLIS;
-  fade_duration = FADE_IN_MILLIS;
-  if (IsVisible()) opacity_end = 1.0f;
-  else opacity_end = 0.0f;
+  is_hovered = true;
 }
 
 void ClosedCaption::AutoPosition(int win_w, int win_h) {
   RECT r = g_curr_dialogbox_rect;
-  int y = r.top + 5;
+  //int y = r.top + 5;
+  int y = 5; // Top display?
   if (y > win_h - 32) y = win_h - 32;
   int x = win_w / 2 - line_width / 2;
   this->x = x;
   this->y = y;
+  printf("[ClosedCaption::AutoPosition] rect=(%d,%d,%d,%d), pos=(%d,%d)\n",
+    r.left, r.top, r.right, r.bottom, x, y);
+}
+
+void ClosedCaption::FadeIn() {
+  if (opacity >= 1.0f) return;
+  long long millis = MillisecondsNow();
+  if (millis < fade_end_millis && opacity_end == 1.0f) return;
+  printf("[FadeIn]\n");
+  opacity_start = opacity;
+  fade_end_millis = millis + FADE_IN_MILLIS;
+  fade_duration = FADE_IN_MILLIS;
+  opacity_end = 1.0f;
+}
+
+void ClosedCaption::FadeOut() {
+  if (opacity <= 0.0f) return;
+  long long millis = MillisecondsNow();
+  if (millis < fade_end_millis && opacity_end == 0.0f) return;
+  printf("[FadeOut]\n");
+  opacity_start = opacity;
+  fade_end_millis = millis + FADE_OUT_MILLIS;
+  fade_duration = FADE_OUT_MILLIS;
+  opacity_end = 0.0f;
 }
 
 // ==========================================
@@ -769,7 +899,7 @@ void MyMessageBox::CalculateDimension() {
     if (is_push == true) { // 换行
       lines.push_back(line);
       line = L"";
-      h += FONT_SIZE;
+      h += int(FONT_SIZE * g_ui_scale_factor);
     }
   }
 }
@@ -791,7 +921,7 @@ void MyMessageBox::Draw() {
     std::wstring& line = lines[i];
     RECT rect;
     rect.left = x;
-    rect.top = y + i * FONT_SIZE;
+    rect.top = y + i * int(FONT_SIZE * g_ui_scale_factor);
     g_font->DrawTextW(NULL, line.c_str(), wcslen(line.c_str()), &rect, DT_NOCLIP, D3DCOLOR_ARGB(255, 255, 255, 255));
   }
 }

@@ -39,6 +39,8 @@ struct CustomVertex {
 class ClosedCaption {
   public:
 
+    static std::string alignment_path;
+
     enum CaptionPlaybackState {
       CAPTION_NOT_PLAYING,
       CAPTION_PLAYING_NO_TIMELINE,
@@ -49,20 +51,6 @@ class ClosedCaption {
     ClosedCaption();
     static int PADDING_LEFT, PADDING_TOP, MOUSE_Y_DELTA;
     static int FADE_IN_MILLIS, FADE_OUT_MILLIS;
-
-    std::map<std::pair<std::string, std::string>, std::set<int> > index; // (who, content) -> Index
-
-    // 用于英文文本 --> 中文文本的映射
-    std::map<std::string, std::string> eng2chs_who;
-    std::map<std::string, std::string> eng2chs_content;
-
-    // 高亮显示的专用名词
-    std::map<std::wstring, std::wstring> proper_names;
-
-    std::wstring sentence, speaker;
-    static std::string alignment_path;
-    int line_width;
-    int visible_height;
 
     static void SetAlignmentPath() {
       char user_directory[233];
@@ -107,7 +95,7 @@ class ClosedCaption {
       }
     }
 
-    void LoadIndexFromMemory(void* ptr, int len) {
+    void LoadSeqDlgIndexFromMemory(void* ptr, int len) {
       char* p = (char*)ptr;
       int idx = 0, num_ety = 0;
       std::string line;
@@ -133,6 +121,8 @@ class ClosedCaption {
                 if (who != "") who += " ";
                 who = who + sp[i];
               }
+
+              all_story_ids.insert(id);
             }
 
             if (who.size() > 0) {
@@ -151,46 +141,11 @@ class ClosedCaption {
         }
         idx++;
       }
-      //printf("[LoadIndexFromMemory] %d entries\n", num_ety);
+      printf("[LoadIndexFromMemory] |all_story_ids|=%lu\n", all_story_ids.size());
     }
 
     // CSV分隔，[ID, Char_CHS, CHS, Char_ENG, ENG_Rev]
-    void LoadEngChsParallelText(const char* fn) {
-      std::ifstream f(fn);
-      int num_entries = 0;
-      if (f.good()) {
-        while (f.good()) {
-          int id; std::string char_chs, chs, char_eng, eng_rev;
-          std::string line, x;
-          std::getline(f, line);
-          std::vector<std::string> sp;
-
-          for (int i = 0; i < int(line.size()); i++) {
-            if (line[i] == '\t') { // UTF-8里的 \t 也是 0x09
-              sp.push_back(x); x = "";
-            }
-            else {
-              x.push_back(line[i]);
-            }
-          }
-          if (x.size() > 0) sp.push_back(x);
-
-          if (sp.size() >= 5) {
-            id = atoi(sp[0].c_str());
-            char_chs = sp[1];
-            chs = sp[2];
-            char_eng = sp[3];
-            eng_rev = sp[4];
-            eng2chs_who[char_eng] = char_chs;
-            eng2chs_content[eng_rev] = chs;
-            num_entries++;
-            //printf("[%s]->[%s], [%s]->[%s]\n", char_eng.c_str(), char_chs.c_str(), eng_rev.c_str(), chs.c_str());
-          }
-        }
-        f.close();
-      }
-      printf("%d entries in parallel text [%s] scanned\n", num_entries, fn);
-    }
+    void LoadEngChsParallelText(const char* fn);
 
     void LoadProperNamesList(const char* fn);
 
@@ -198,6 +153,8 @@ class ClosedCaption {
 
     // Returns status code
     int SetAlignmentFileByAudioID(int id);
+
+    int GuessNextAudioID(int id);
 
     std::wstring GetCurrLine();
 
@@ -262,12 +219,32 @@ class ClosedCaption {
 
     void AutoPosition(int win_w, int win_h);
 
+    void FadeIn();
+
+    void FadeOut();
+
   private:
+
+    std::map<std::pair<std::string, std::string>, std::set<int> > index; // (who, content) -> Index
+
+    // (English Text, IDX) -> (Original Text)
+    std::map<std::pair<std::string, int>, std::string> eng2chs_who;
+    std::map<std::pair<std::string, int>, std::string> eng2chs_content;
+
+    // 高亮显示的专用名词
+    std::map<std::wstring, std::wstring> proper_names;
+
+    std::wstring sentence, speaker;
+    int line_width;
+    int visible_height;
+
     float opacity, opacity_end, opacity_start;
     long long fade_end_millis, fade_duration;
     CaptionPlaybackState caption_state;
     bool is_hovered, is_dragging;
-    int last_mainstory;
+
+    std::set<int> all_story_ids;
+
     long long start_millis;
     std::map<RECT, int, RectCmp> bb2char;
     int x, y;
