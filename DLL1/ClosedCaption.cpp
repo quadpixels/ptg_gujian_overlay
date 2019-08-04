@@ -4,15 +4,17 @@
 #include <d3dx9.h>
 #include <d3d9.h>
 #include "miniz.h"
+#include <assert.h>
 
 // in dll1.cpp
 extern std::wstring_convert<std::codecvt_utf8_utf16<wchar_t> > g_converter;
 extern long long MillisecondsNow();
 extern LPD3DXFONT g_font;
 extern int FONT_SIZE;
-extern MyMessageBox* g_hover_messagebox;
+extern MyMessageBox* g_hover_messagebox, *g_dbg_messagebox;
 extern IDirect3DDevice9* g_pD3DDevice;
 extern bool IsDialogBoxMaybeGone();
+extern CRITICAL_SECTION g_critsect_rectlist, g_calc_dimension;
 
 IDirect3DVertexBuffer9* g_vert_buf;
 IDirect3DStateBlock9* g_pStateBlock;
@@ -140,7 +142,7 @@ ClosedCaption::ClosedCaption() {
   x = 2;
   y = 29;
 
-  is_debug = false;
+  is_debug = true;
 
   LoadDummy();
 }
@@ -424,6 +426,10 @@ void ClosedCaption::Draw() {
   }
 
   if (g_hover_messagebox) g_hover_messagebox->Draw();
+  if (is_debug && g_dbg_messagebox) {
+    g_dbg_messagebox->CalculateDimension(); // Must be in main thread.
+    g_dbg_messagebox->Draw();
+  }
 
   // 恢复先前的渲染状态
   RestoreD3D9RenderState();
@@ -686,6 +692,8 @@ void ClosedCaption::FindKeywordsForHighlighting() {
 
 // CSV分隔，[ID, Char_CHS, CHS, Char_ENG, ENG_Rev]
 void ClosedCaption::LoadEngChsParallelText(const char* fn) {
+  assert(0);
+  #if 0
   std::ifstream f(fn);
   int num_entries = 0;
   if (f.good()) {
@@ -722,6 +730,55 @@ void ClosedCaption::LoadEngChsParallelText(const char* fn) {
     f.close();
   }
   printf("%d entries in parallel text [%s] scanned\n", num_entries, fn);
+  #endif
+}
+
+void ClosedCaption::LoadEngChsParallelTextFromMemory(const char* ptr, int len) {
+  int idx = 0, num_entries = 0;
+  while (true) {
+    int id; std::string char_chs, chs, char_eng, eng_rev;
+    std::string line, x;
+    std::vector<std::string> sp;
+    
+    // Get line
+    while (true) {
+      if (idx >= len) goto DONE;
+      char ch = ptr[idx ++];
+      if (ch != '\n' && ch != '\r') {
+        line.push_back(ch);
+      }
+      else {
+        break;
+      }
+    }
+
+    // Extract word
+    for (int i = 0; i<int(line.size()); i++) {
+      if (line[i] == '\t') {
+        sp.push_back(x); x = "";
+      }
+      else {
+        x.push_back(line[i]);
+      }
+    }
+    if (x.size() > 0) sp.push_back(x);
+
+    if (sp.size() >= 5) {
+      id = atoi(sp[0].c_str());
+      char_chs = sp[1];
+      chs = sp[2];
+      char_eng = sp[3];
+      eng_rev = sp[4];
+      eng2chs_who[std::make_pair(char_eng, id)] = char_chs;
+      eng2chs_who[std::make_pair(char_eng, -999)] = char_chs; // For non-sequence dialogs
+      eng2chs_content[std::make_pair(eng_rev, id)] = chs;
+      eng2chs_content[std::make_pair(eng_rev, -999)] = chs;
+      num_entries++;
+      //printf("[%s]->[%s], [%s]->[%s]\n", char_eng.c_str(), char_chs.c_str(), eng_rev.c_str(), chs.c_str());
+    }
+  }
+  DONE:
+  printf("%d entries of parallel text scanned from memory\n", num_entries);
 }
 
 void ClosedCaption::LoadProperNamesList(const char* fn) {
@@ -847,9 +904,10 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
       }
     }
     if (popup_txt.size() > 0) {
-      g_hover_messagebox->SetText(popup_txt, 250);
+      g_hover_messagebox->SetText(popup_txt, 320 * g_ui_scale_factor);
       g_hover_messagebox->x = bb.left + this->x;
       g_hover_messagebox->y = bb.top + int(FONT_SIZE * g_ui_scale_factor) + MOUSE_Y_DELTA + this->y;
+      g_hover_messagebox->CalculateDimension(); // Must be in main thread
     }
     else {
       g_hover_messagebox->Hide();
@@ -912,38 +970,71 @@ void MyMessageBox::StaticInit() {
 }
 
 void MyMessageBox::CalculateDimension() {
+  EnterCriticalSection(&g_calc_dimension);
   lines.clear();
-  std::wstring line;
+  std::wstring line, curr_word;
   for (int i = 0; i <= message.size(); i++) {
-
-    std::wstring line_peek;
     bool is_push = false;
-
+    wchar_t ch = L'\0';
     if (i < message.size()) {
-      line = line + message[i];
-      line_peek = line + message[i + 1];
-      RECT rect;
-      g_font->DrawTextW(NULL, line_peek.c_str(), wcslen(line_peek.c_str()), &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
-      if (rect.right - rect.left > w) is_push = true;
+      ch = message[i];
+    }
+
+    RECT rect;
+    g_font->DrawTextW(NULL, line.c_str(), wcslen(line.c_str()), &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
+    const int line_w = rect.right - rect.left;
+
+    g_font->DrawTextW(NULL, curr_word.c_str(), wcslen(curr_word.c_str()), &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
+    const int word_w = rect.right - rect.left;
+
+    if (word_w > w) {
+      lines.push_back(curr_word.substr(0, int(curr_word.size()) - 1));
+      curr_word = curr_word.back();
+    }
+    else if ((ch == L'\n' || ch == L'\r')) {
+      curr_word = curr_word + ch;
+      if (line.size() > 0) line = line + L" ";
+      line = line + curr_word;
+      lines.push_back(line);
+      curr_word = line = L"";
+    } 
+    else if (ch == L' ' || i == message.size()) {
+      if (line_w + word_w > w) {
+        lines.push_back(line);
+        line = curr_word;
+        curr_word = L"";
+      }
+      else {
+        if (line.size() > 0) line = line + L" ";
+        line = line + curr_word;
+        curr_word = L"";
+      }
+
+      if (i == message.size()) {
+        lines.push_back(line);
+      }
     }
     else {
-      if (line.size() > 0)
-        is_push = true;
+      curr_word.push_back(ch);
     }
-
-    if (is_push == true) { // 换行
-      lines.push_back(line);
-      line = L"";
-      h += int(FONT_SIZE * g_ui_scale_factor);
-    }
+    /*
+    curr_word += message[i];
+    line = line + message[i];
+    line_peek = line + message[i + 1];
+    g_font->DrawTextW(NULL, line_peek.c_str(), wcslen(line_peek.c_str()), &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
+    if (rect.right - rect.left > w) is_push = true;
+    */
+    
   }
+
+  h = FONT_SIZE * g_ui_scale_factor * lines.size();
+  LeaveCriticalSection(&g_calc_dimension);
 }
 
 void MyMessageBox::SetText(const std::wstring& msg, int width_limit) {
   message = msg;
   w = width_limit;
   x = y = h = 0;
-  CalculateDimension();
 }
 
 void MyMessageBox::Draw() {
