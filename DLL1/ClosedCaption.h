@@ -147,6 +147,8 @@ class ClosedCaption {
     // CSV分隔，[ID, Char_CHS, CHS, Char_ENG, ENG_Rev]
     void LoadEngChsParallelText(const char* fn);
 
+    void LoadEngChsParallelTextFromMemory(const char* ptr, int len);
+
     void LoadProperNamesList(const char* fn);
 
     void OnFuncTalk(const char* who, const char* content);
@@ -201,6 +203,10 @@ class ClosedCaption {
     }
 
     void ToggleVisibility();
+
+    void ToggleIsDebug() { is_debug = !is_debug; }
+
+    bool IsDebug() { return is_debug; }
 
     bool IsVisible() {
       if (is_hovered) return true;
@@ -260,7 +266,7 @@ class ClosedCaption {
     }
 
     RECT FindBbByCharIdx(int idx) {
-      RECT ret;
+      RECT ret = { 0 };
       std::map<RECT, int, RectCmp>::iterator itr = bb2char.begin();
       while (itr != bb2char.end()) {
         if (itr->second == idx) {
