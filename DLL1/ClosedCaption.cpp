@@ -5,6 +5,7 @@
 #include <d3d9.h>
 #include "miniz.h"
 #include <assert.h>
+#include <list>
 
 // in dll1.cpp
 extern std::wstring_convert<std::codecvt_utf8_utf16<wchar_t> > g_converter;
@@ -22,12 +23,35 @@ extern mz_zip_archive g_archive_dialog_aligned;
 extern RECT g_curr_dialogbox_rect; // Detect.cpp
 extern float g_ui_scale_factor;
 
-std::wstring g_header1 = L"ptg>";
-std::wstring g_header2 = L"   >";
+std::wstring g_header1 = L"";
 
+// Highlight dialog contents according to proper names list
+HANDLE g_pnl_highlight_thd_handle;
+DWORD  g_pnl_highlight_thd_id;
+
+std::list<std::wstring> g_pnl_workqueue; // Q is safe for extreme cases (e.g. when some user issues 10000 changes in a second)
+CRITICAL_SECTION g_pnl_workq_critsect, g_pnl_mask_critsect;
+
+DWORD WINAPI PnlHighlightThdStart(LPVOID lpParam) {
+  ClosedCaption* cc = (ClosedCaption*)lpParam;
+  while (true) {
+    while (g_pnl_workqueue.empty()) {
+      Sleep(50);
+    }
+
+    EnterCriticalSection(&g_pnl_workq_critsect);
+    while (g_pnl_workqueue.size() > 1)
+      g_pnl_workqueue.pop_front();
+    std::wstring the_work = g_pnl_workqueue.back();
+    g_pnl_workqueue.clear();
+    LeaveCriticalSection(&g_pnl_workq_critsect);
+
+    cc->do_FindKeywordsForHighlighting(the_work);
+  }
+}
 
 struct MyD3D9RenderState {
-  DWORD alpha_blend_enable, blend_op, blend_op_alpha, src_blend, dest_blend, lighting, cull_mode;
+  DWORD alpha_blend_enable, blend_op, blend_op_alpha, src_blend, dest_blend, lighting, cull_mode, alpha_func;
   IDirect3DSurface9* pDsv;
 };
 MyD3D9RenderState g_render_state;
@@ -39,6 +63,7 @@ void BackupD3D9RenderState() {
   g_pD3DDevice->GetRenderState(D3DRS_DESTBLEND, &(g_render_state.dest_blend));
   g_pD3DDevice->GetRenderState(D3DRS_LIGHTING, &(g_render_state.lighting));
   g_pD3DDevice->GetRenderState(D3DRS_CULLMODE, &(g_render_state.cull_mode));
+  g_pD3DDevice->GetRenderState(D3DRS_ALPHAFUNC, &(g_render_state.alpha_func));
   g_pD3DDevice->GetDepthStencilSurface(&(g_render_state.pDsv));
 }
 
@@ -52,6 +77,7 @@ void RestoreD3D9RenderState() {
   g_pD3DDevice->SetRenderState(D3DRS_LIGHTING, g_render_state.lighting);
   g_pD3DDevice->SetDepthStencilSurface(g_render_state.pDsv);
   g_pD3DDevice->SetRenderState(D3DRS_CULLMODE, g_render_state.cull_mode);
+  g_pD3DDevice->SetRenderState(D3DRS_ALPHAFUNC, g_render_state.alpha_func);
 }
 
 // ========================= HELPER ==============================
@@ -61,10 +87,10 @@ void DrawBorderedRectangle(int x, int y, int w, int h, D3DCOLOR bkcolor, D3DCOLO
   // 画背景
   CustomVertex quad_bk[] =
   {
-    { x,   y,   Z, 1.0f, bkcolor, },
-    { x + w, y,   Z, 1.0f, bkcolor, },
-    { x,   y + h, Z, 1.0f, bkcolor, },
-    { x + w, y + h, Z, 1.0f, bkcolor, },
+    { int(x),     int(y),   Z, 1.0f, bkcolor, },
+    { int(x + w), int(y),   Z, 1.0f, bkcolor, },
+    { int(x),     int(y + h), Z, 1.0f, bkcolor, },
+    { int(x + w), int(y + h), Z, 1.0f, bkcolor, },
   };
 
   g_vert_buf->Lock(0, 0, (void**)(&pVoid), 0);
@@ -121,6 +147,43 @@ void DrawBorderedRectangle(int x, int y, int w, int h, D3DCOLOR bkcolor, D3DCOLO
   g_pD3DDevice->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
   g_pD3DDevice->DrawPrimitive(D3DPT_LINELIST, 0, 8);
 }
+
+std::vector<std::string> MySplitString(const std::string line, const char sep) {
+  std::vector<std::string> sp;
+  std::string x;
+  for (int i = 0; i < line.size(); i++) {
+    if (line[i] == sep) {
+      sp.push_back(x); x = "";
+    }
+    else {
+      x.push_back(line[i]);
+    }
+  }
+  if (x.size() > 0) sp.push_back(x);
+  return sp;
+}
+
+std::string MyGetLineFromMemory(const char* buf, int* idx, size_t buf_len) {
+  std::string line;
+  while (true) {
+    if (*idx >= int(buf_len)) break;
+    bool has_new_line = false;
+    while ((*idx) < buf_len && buf[(*idx)] == '\n' || buf[(*idx)] == '\r') {
+      has_new_line = true;
+      (*idx)++;
+    }
+
+    if (has_new_line) break;
+
+    char ch = buf[(*idx)];
+    if (ch != '\n' && ch != '\r') {
+      line.push_back(ch);
+      (*idx)++;
+    }
+  }
+  return line;
+}
+
 // ===============================================================
 
 int ClosedCaption::PADDING_LEFT = 0;
@@ -142,9 +205,9 @@ ClosedCaption::ClosedCaption() {
   x = 2;
   y = 29;
 
-  is_debug = true;
+  is_debug = false;
 
-  LoadDummy();
+  LoadDummy(nullptr);
 }
 
 int ClosedCaption::GuessNextAudioID(int id) {
@@ -185,19 +248,19 @@ void ClosedCaption::ComputeBoundingBoxPerChar() {
   int offset = 0; // offset in title
 
   for (int i = 0; i<int(s.size()); i++) {
-    RECT rect, rect_header;
+    RECT rect;
     rect.left = left; rect.top = y0 + i * (1 + int(FONT_SIZE * g_ui_scale_factor));
     wchar_t msg[1024];
 
     // Header
-    if (i == 0) wsprintf(msg, g_header1.c_str());
-    else wsprintf(msg, g_header2.c_str());
+    msg, g_header1.c_str();
     g_font->DrawTextW(NULL, msg, wcslen(msg), &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
 
     int last_x = rect.right;
-    if (i == 0) wsprintf(msg, L"%ls%ls", g_header1.c_str(), s[i].c_str());
-    else wsprintf(msg, L"%ls%ls", g_header2.c_str(), s[i].c_str());
-    const int HEADER_LEN = int(g_header1.size());
+    wsprintf(msg, L"%ls%ls", g_header1.c_str(), s[i].c_str());
+
+    int HEADER_LEN = int(g_header1.size());
+    
     for (int j = HEADER_LEN; j < wcslen(msg); j++) {
       g_font->DrawTextW(0, msg, j + 1, &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
       const int curr_x = rect.right;
@@ -247,6 +310,8 @@ std::vector<std::wstring> ClosedCaption::GetVisualLines(bool is_full) {
 
 void ClosedCaption::do_DrawHighlightedProperNouns(RECT rect_header, RECT rect, const int curr_text_offset, const std::wstring line, D3DCOLOR color) {
   const int lb = 0, ub = 0 + line.size() - 1;
+  std::vector<std::wstring> lines = GetVisualLines(true);
+  EnterCriticalSection(&g_pnl_mask_critsect);
   for (const std::pair<int, int> x : proper_noun_ranges) {
     RECT rect_header1 = rect_header, rect1 = rect;
     int lb1 = x.first - curr_text_offset, ub1 = x.first + x.second - 1 - curr_text_offset; // 要减去该行所在的offset
@@ -263,6 +328,7 @@ void ClosedCaption::do_DrawHighlightedProperNouns(RECT rect_header, RECT rect, c
       g_font->DrawTextW(NULL, content.c_str(), int(content.size()), &rect1, DT_NOCLIP, color);
     }
   }
+  LeaveCriticalSection(&g_pnl_mask_critsect);
 }
 
 void ClosedCaption::do_DrawBorder(int x, int y, int w, int h) {
@@ -386,14 +452,13 @@ void ClosedCaption::Draw() {
     std::wstring msg;
 
     // Measure header width
-    if (i == 0) msg = g_header1;
-    else msg = g_header2;
+    msg = g_header1;
     g_font->DrawTextW(NULL, msg.c_str(), msg.size(), &rect_header, DT_CALCRECT, D3DCOLOR_ARGB(int(255 * o), 255, 255, 255));
 
     // Draw full text
-    if (i == 0) msg = g_header1 + s[i];
-    else msg = g_header2 + s[i];
+    msg = g_header1 + s[i];
     D3DCOLOR color = D3DCOLOR_ARGB(int(224 * o), 192, 192, 192);
+    // Only draw on line[0]
     g_font->DrawTextW(0, msg.c_str(), msg.size(), &rect, DT_NOCLIP, color);
 
     // Draw proper nouns that are not highlighted
@@ -604,11 +669,11 @@ int ClosedCaption::SetAlignmentFileByAudioID(int id) {
     printf("[SetAlignmentFileByAudioID] %s = %lu bytes\n", path, sz);
     std::string line;
     int idx = 0;
-    while (idx <= sz) {
+    while (idx <= int(sz)) {
       if (idx < sz && buf[idx] != '\n') {
         line.push_back(buf[idx]);
       }
-      else if ((idx == sz) || (idx < sz && buf[idx] == '\n')) {
+      else if ((idx == int(sz)) || (idx < int(sz) && buf[idx] == '\n')) {
         std::istringstream is(line);
         float t0, t1; std::string word;
         is >> t0 >> t1 >> word;
@@ -640,8 +705,10 @@ int ClosedCaption::SetAlignmentFileByAudioID(int id) {
   return ret;
 }
 
-void ClosedCaption::LoadDummy() {
-  wchar_t s[] = L"Hover/Right shift to reveal; Right mouse click to drag around";
+void ClosedCaption::LoadDummy(const wchar_t* msg) {
+  wchar_t s[233];
+  if (msg == nullptr) swprintf_s(s, L"Hover/Right shift to reveal; Right mouse click to drag around");
+  else swprintf_s(s, msg);
 
   millis2word.clear();
   for (int i = 0; i < int(wcslen(s)); i++) {
@@ -660,22 +727,34 @@ void ClosedCaption::LoadDummy() {
 void ClosedCaption::FindKeywordsForHighlighting() {
   std::wstring fulltext = GetFullLine();
 
-  proper_noun_mask.clear();
-  proper_noun_mask.resize(fulltext.size(), false);
+  // in main thread
+  // do_FindKeywordsForHighlighting(fulltext);
+  // in worker thread
+  EnterCriticalSection(&g_pnl_workq_critsect);
+  g_pnl_workqueue.push_back(fulltext);
+  LeaveCriticalSection(&g_pnl_workq_critsect);
+}
 
+// Thread work-item
+void ClosedCaption::do_FindKeywordsForHighlighting(std::wstring s) {
+  
+  std::vector<bool> pnl_mask;
+  pnl_mask.resize(s.size(), false);
   proper_noun_ranges.clear();
+
+  std::set<std::pair<int, int> > next_pnl_ranges;
 
   for (std::map<std::wstring, std::wstring>::iterator itr =
     proper_names.begin(); itr != proper_names.end(); itr++) {
     std::wstring kw = itr->first;
 
     int offset = 0;
-    while (offset < int(fulltext.size())) {
-      size_t occ = fulltext.find(kw, offset);
+    while (offset < int(s.size())) {
+      size_t occ = s.find(kw, offset);
       if (occ != std::string::npos) {
-        proper_noun_ranges.insert(std::make_pair(int(occ), int(kw.size())));
+        next_pnl_ranges.insert(std::make_pair(int(occ), int(kw.size())));
         for (int j = occ; j < occ + int(kw.size()); j++) {
-          proper_noun_mask[j] = true;
+          pnl_mask[j] = true;
         }
         offset = occ + 1;
       }
@@ -684,10 +763,50 @@ void ClosedCaption::FindKeywordsForHighlighting() {
   }
 
   printf("[FindKeywordsForHighlighting] ");
-  for (int i = 0; i<int(proper_noun_mask.size()); i++) {
-    printf("%d", int(proper_noun_mask[i]));
+  for (int i = 0; i<int(pnl_mask.size()); i++) {
+    printf("%d", int(pnl_mask[i]));
   }
   printf("\n");
+
+  EnterCriticalSection(&g_pnl_mask_critsect);
+  proper_noun_ranges = next_pnl_ranges;
+  LeaveCriticalSection(&g_pnl_mask_critsect);
+}
+
+void ClosedCaption::LoadSeqDlgIndexFromMemory(void* ptr, int len) {
+  char* p = (char*)ptr;
+  int idx = 0, num_ety = 0;
+
+  while (idx < len) {
+    std::string line = MyGetLineFromMemory((const char*)ptr, &idx, len);
+    std::istringstream is(line);
+    std::vector<std::string> sp;
+    while (is.good()) {
+      std::string x;
+      is >> x;
+      sp.push_back(x);
+    }
+    line = "";
+
+    std::string content, who; int id;
+
+    if (sp.size() >= 3) {
+      id = atoi(sp[0].c_str());
+      content = sp.back();
+      for (int i = 1; i < int(sp.size()) - 1; i++) {
+        if (who != "") who += " ";
+        who = who + sp[i];
+      }
+
+      all_story_ids.insert(id);
+    }
+
+    if (who.size() > 0) {
+      index[std::make_pair(who, content)].insert(id);
+      num_ety++;
+    }
+  }
+  printf("[LoadIndexFromMemory] |all_story_ids|=%lu\n", all_story_ids.size());
 }
 
 // CSV分隔，[ID, Char_CHS, CHS, Char_ENG, ENG_Rev]
@@ -735,33 +854,13 @@ void ClosedCaption::LoadEngChsParallelText(const char* fn) {
 
 void ClosedCaption::LoadEngChsParallelTextFromMemory(const char* ptr, int len) {
   int idx = 0, num_entries = 0;
-  while (true) {
+  while (idx < len) {
     int id; std::string char_chs, chs, char_eng, eng_rev;
     std::string line, x;
-    std::vector<std::string> sp;
     
     // Get line
-    while (true) {
-      if (idx >= len) goto DONE;
-      char ch = ptr[idx ++];
-      if (ch != '\n' && ch != '\r') {
-        line.push_back(ch);
-      }
-      else {
-        break;
-      }
-    }
-
-    // Extract word
-    for (int i = 0; i<int(line.size()); i++) {
-      if (line[i] == '\t') {
-        sp.push_back(x); x = "";
-      }
-      else {
-        x.push_back(line[i]);
-      }
-    }
-    if (x.size() > 0) sp.push_back(x);
+    line = MyGetLineFromMemory(ptr, &idx, len);
+    std::vector<std::string> sp = MySplitString(line, '\t');
 
     if (sp.size() >= 5) {
       id = atoi(sp[0].c_str());
@@ -774,10 +873,8 @@ void ClosedCaption::LoadEngChsParallelTextFromMemory(const char* ptr, int len) {
       eng2chs_content[std::make_pair(eng_rev, id)] = chs;
       eng2chs_content[std::make_pair(eng_rev, -999)] = chs;
       num_entries++;
-      //printf("[%s]->[%s], [%s]->[%s]\n", char_eng.c_str(), char_chs.c_str(), eng_rev.c_str(), chs.c_str());
     }
   }
-  DONE:
   printf("%d entries of parallel text scanned from memory\n", num_entries);
 }
 
@@ -786,20 +883,10 @@ void ClosedCaption::LoadProperNamesList(const char* fn) {
   int num_entries = 0;
   if (f.good()) {
     while (f.good()) {
-      int term, defn;
       std::string line, x;
       std::getline(f, line);
-      std::vector<std::string> sp;
-      for (int i = 0; i < line.size(); i++) {
-        if (line[i] == '\t') {
-          sp.push_back(x); x = "";
-        }
-        else {
-          x.push_back(line[i]);
-        }
-      }
-      if (x.size() > 0) sp.push_back(x);
-
+      std::vector<std::string> sp = MySplitString(line, '\t');
+      
       // MBS -> WCS
       if (sp.size() >= 2) {
         int len_term = MultiByteToWideChar(CP_UTF8, 0, sp[0].c_str(), -1, NULL, NULL);
@@ -822,6 +909,40 @@ void ClosedCaption::LoadProperNamesList(const char* fn) {
     f.close();
   }
   printf("%d entries in proper names list [%s] scanned\n", num_entries, fn);
+}
+
+void ClosedCaption::LoadProperNamesListFromMemory(const char* ptr, int len) {
+  int idx = 0, num_entries = 0;
+  while (idx < len) {
+    int term;
+    std::string x;
+
+    // Get Line
+    std::string line = MyGetLineFromMemory(ptr, &idx, len);
+
+    // Split
+    std::vector<std::string> sp = MySplitString(line, '\t');
+    
+    // MBS -> WCS
+    if (sp.size() >= 2) {
+      int len_term = MultiByteToWideChar(CP_UTF8, 0, sp[0].c_str(), -1, NULL, NULL);
+      wchar_t* wterm = new wchar_t[len_term];
+      MultiByteToWideChar(CP_UTF8, 0, sp[0].c_str(), -1, wterm, len_term);
+      std::wstring wsterm = wterm;
+      delete wterm;
+
+      int len_defn = MultiByteToWideChar(CP_UTF8, 0, sp[1].c_str(), -1, NULL, NULL);
+      wchar_t* wdefn = new wchar_t[len_defn];
+      MultiByteToWideChar(CP_UTF8, 0, sp[1].c_str(), -1, wdefn, len_defn);
+      std::wstring wsdefn = wdefn;
+      delete wdefn;
+
+      proper_names[wsterm] = wsdefn;
+      num_entries++;
+      //wprintf(L"%ls->%ls\n", wsterm.c_str(), wsdefn.c_str());
+    }
+  }
+  printf("%d entries in proper names list scanned from memory\n", num_entries);
 }
 
 int ClosedCaption::FindTextIdxByMousePos(int mx, int my, RECT* p_bb) {
@@ -880,7 +1001,9 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
 #endif
   if (ch_idx != -999 && (ch_idx != last_highlight_idx)) {
     std::wstring popup_txt = L"";
-    // 是否与词典重合
+    // Any substring found in the list?
+
+    EnterCriticalSection(&g_pnl_mask_critsect);
     for (std::set<std::pair<int, int> >::iterator itr = proper_noun_ranges.begin(); itr != proper_noun_ranges.end(); itr++) {
       highlighted_range.first = -999;
       highlighted_range.second = 0;
@@ -903,8 +1026,10 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
 
       }
     }
+    LeaveCriticalSection(&g_pnl_mask_critsect);
+
     if (popup_txt.size() > 0) {
-      g_hover_messagebox->SetText(popup_txt, 320 * g_ui_scale_factor);
+      g_hover_messagebox->SetText(popup_txt, int(320 * g_ui_scale_factor));
       g_hover_messagebox->x = bb.left + this->x;
       g_hover_messagebox->y = bb.top + int(FONT_SIZE * g_ui_scale_factor) + MOUSE_Y_DELTA + this->y;
       g_hover_messagebox->CalculateDimension(); // Must be in main thread
@@ -973,7 +1098,7 @@ void MyMessageBox::CalculateDimension() {
   EnterCriticalSection(&g_calc_dimension);
   lines.clear();
   std::wstring line, curr_word;
-  for (int i = 0; i <= message.size(); i++) {
+  for (int i = 0; i <= int(message.size()); i++) {
     bool is_push = false;
     wchar_t ch = L'\0';
     if (i < message.size()) {
@@ -1027,7 +1152,7 @@ void MyMessageBox::CalculateDimension() {
     
   }
 
-  h = FONT_SIZE * g_ui_scale_factor * lines.size();
+  h = int(FONT_SIZE * g_ui_scale_factor * lines.size());
   LeaveCriticalSection(&g_calc_dimension);
 }
 
