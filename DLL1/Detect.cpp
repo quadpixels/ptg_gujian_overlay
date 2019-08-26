@@ -6,15 +6,18 @@
 #include <synchapi.h>
 #include <unordered_map>
 #include <unordered_set>
+#include <list>
 
 #include "ClosedCaption.h"
 #include "config.h"
+#include "miniz.h"
 
 bool DEBUG_DIALOG_BOX = true;
 
 extern ClosedCaption g_ClosedCaption;
 extern void DrawBorderedRectangle(int x, int y, int w, int h, D3DCOLOR bkcolor, D3DCOLOR bordercolor);
 extern CRITICAL_SECTION g_critsect_rectlist, g_calc_dimension;
+extern CRITICAL_SECTION g_pnl_workq_critsect, g_pnl_mask_critsect;
 extern LPD3DXFONT g_font;
 extern IDirect3DSurface9* g_pSurfaceCopy;
 extern LPD3DXBUFFER g_pSurfaceBuf;
@@ -26,9 +29,51 @@ extern void BackupD3D9RenderState();
 extern void RestoreD3D9RenderState();
 extern void InitFont(int size); // in dll1.cpp
 extern MyMessageBox* g_dbg_messagebox;
+extern mz_zip_archive g_archive_match_templates;
+
+extern HANDLE g_pnl_highlight_thd_handle;
+extern DWORD  g_pnl_highlight_thd_id;
+extern DWORD WINAPI PnlHighlightThdStart(LPVOID lpParam);
 
 // TODO: Detect whether dialog box exists
 // TODO: greyscale ??
+
+// Gather metric statistics for offline study
+struct MyHistogram {
+  std::list<float> measurements;
+  std::string name;
+  int dump_offset;
+  const int SAVE_INTERVAL = 100;
+  MyHistogram(std::string _name) {
+    dump_offset = 0;
+    name = _name;
+  }
+  void AddMeasurement(float x) {
+    measurements.push_back(x);
+    if ((measurements.size() % SAVE_INTERVAL) == (SAVE_INTERVAL - 1)) {
+      DumpToFile();
+    }
+  }
+  void DumpToFile() {
+    char tmp[255];
+    sprintf_s(tmp, "C:\\temp\\%s.txt", name.c_str());
+    FILE* f;
+    errno_t e = fopen_s(&f, tmp, "a");
+    if (e != 0) return;
+    int idx = 0;
+    for (float m : measurements) {
+      if (idx >= dump_offset) {
+        fprintf(f, "%g\n", m);
+      }
+      idx++;
+    }
+    dump_offset = int(measurements.size());
+    fclose(f);
+  }
+  ~MyHistogram() {
+    DumpToFile();
+  }
+};
 
 // 每个Template 可以有自己的 scale
 struct MatchTemplate {
@@ -46,7 +91,10 @@ struct MatchTemplate {
   // 动态属性
   int last_frame_match_count;
 
-  MatchTemplate() { 
+  MyHistogram* histogram;
+
+  MatchTemplate() {
+    histogram = nullptr;
     mask = nullptr;
     scale = 0.5f;  // Use 0.5x resolution by default
     direction = 3;
@@ -166,6 +214,13 @@ struct MatchResult {
 };
 std::vector<MatchResult> highlight_rects;
 
+void ClearHighlightRects() {
+  EnterCriticalSection(&g_critsect_rectlist);
+  highlight_rects.clear();
+  g_match_cache.clear();
+  LeaveCriticalSection(&g_critsect_rectlist);
+}
+
 unsigned char* g_img_data;
 int g_img_len;
 int g_detector_mode; // 1: detect, 2: remove existing
@@ -223,12 +278,13 @@ bool IsDialogBoxMaybeGone() {
 
 // About half second using debug library
 void DoDetect(unsigned char* chr, const int len) {
+  const int N = int(g_templates.size()); // This can help avoid data race!
   std::vector<int> this_frame_match_count;
   std::wstring dbg_string = L"";
   const bool VERBOSE = true;
 
   std::vector<struct MatchResult> next_rect;
-  printf(">>> [DoDetect]\n");
+  //printf(">>> [DoDetect]\n");
   //g_surface_mat = cv::Mat(w, h, CV_8UC4, ch).t();
 
   cv::Mat raw_data_mat(1, len, CV_8UC1, chr);
@@ -292,7 +348,7 @@ void DoDetect(unsigned char* chr, const int len) {
   {
     std::unordered_map<int, std::list<int> > sid2idx;
     
-    for (int i = 0; i < int(g_templates.size()); i++) {
+    for (int i = 0; i < N; i++) {
       sid2idx[g_templates[i]->scene_id].push_back(i);
     }
 
@@ -316,10 +372,10 @@ void DoDetect(unsigned char* chr, const int len) {
     }
   }
 
-  this_frame_match_count.resize(int(g_templates.size()));
+  this_frame_match_count.resize(N);
   for (int i = 0; i < this_frame_match_count.size(); i++) this_frame_match_count[i] = 0;
 
-  for (int x = 0; x < int(g_templates.size()); x++) {
+  for (int x = 0; x < N; x++) {
     cv::TemplateMatchModes mode = cv::TM_CCOEFF_NORMED;
     
     int i = template_idxes[x];
@@ -383,9 +439,6 @@ void DoDetect(unsigned char* chr, const int len) {
       cv::minMaxLoc(result, &min_val, &max_val, &min_loc, &max_loc, cv::Mat());
       min_loc.x += c.left; min_loc.y += c.top;
       max_loc.x += c.left; max_loc.y += c.top;
-
-      if (VERBOSE)
-        printf("Template[%d], using cache\n", i);
     } else { // Full match
       if (use_mask) {
         cv::matchTemplate(*r, m, result, mode, *mask);
@@ -428,6 +481,13 @@ void DoDetect(unsigned char* chr, const int len) {
       break;
     }
 
+    // Record metric if histogram struct exists
+    if (g_ClosedCaption.IsDebug()) {
+      if (g_templates[i]->histogram != nullptr) {
+        g_templates[i]->histogram->AddMeasurement(metric);
+      }
+    }
+
     // Divide by scale gives coordinate at 100% UI scale
     // Multiplication by g_ui_scale_factor gives coordinates on rendered frame
     if (VERBOSE) {
@@ -438,7 +498,7 @@ void DoDetect(unsigned char* chr, const int len) {
       }
       swprintf_s(
         buf,
-        L"[%2d] %-14ls lfm=%d %1.1fx %d (%.3f,%.3f) %ls\n",
+        L"[%2d] %-14ls lfm=%d %1.1fx %d (%.3f,%.3f) %ls %ls\n",
         i,
         x.c_str(),
         g_templates[i]->last_frame_match_count,
@@ -449,6 +509,7 @@ void DoDetect(unsigned char* chr, const int len) {
         //ans.x, ans.y,
         //int(ans.x / scale * g_ui_scale_factor), int(ans.y / scale * g_ui_scale_factor),
         min_val, max_val,
+        (in_cache ? L"$" : L"_"),
         (found ? L"Found" : L""));
       
       if (g_ClosedCaption.IsDebug()) {
@@ -456,10 +517,12 @@ void DoDetect(unsigned char* chr, const int len) {
       }
     }
     else {
-      if (in_cache) printf("C");
-      else if (found) printf("+");
-      else printf(".");
-      fflush(stdout);
+      /*
+        if (in_cache) printf("C");
+        else if (found) printf("+");
+        else printf(".");
+        fflush(stdout);
+      */
     }
 
     if (found == true) {
@@ -497,7 +560,7 @@ void DoDetect(unsigned char* chr, const int len) {
 
   tmp_orig.release();
 
-  printf("<<< [DoDetect] |resized|=%lu\n", resized.size());
+  ///printf("<<< [DoDetect] |resized|=%lu\n", resized.size());
 
   for (std::pair<std::pair<float, bool>, cv::Mat*> p : resized) {
     p.second->release();
@@ -512,7 +575,7 @@ void DoDetect(unsigned char* chr, const int len) {
   g_dbg_messagebox->SetText(dbg_string, 800*g_ui_scale_factor);
   // CalcDimension should be in main thread!
 
-  for (int i = 0; i < g_templates.size(); i++) {
+  for (int i = 0; i < N; i++) {
     g_templates[i]->last_frame_match_count = this_frame_match_count[i];
   }
 }
@@ -613,125 +676,278 @@ void DoCheckMatchesDisappear(unsigned char* chr, const int len) {
   LeaveCriticalSection(&g_critsect_rectlist);
 }
 
-void LoadImagesAndInitDetectThread() {
+void LoadImagesFromFile() // Read Image List
+{
+  const std::string image_list = g_config.root_path + "\\TemplateList.txt";
 
-  InitializeCriticalSection(&g_critsect_rectlist);
-  InitializeCriticalSection(&g_calc_dimension);
+  std::string dir_name = image_list;
+  int idx = int(dir_name.size() - 1);
+  while (idx > 0 && dir_name[idx] != '\\') idx--;
+  dir_name = dir_name.substr(0, idx);
 
-  // Read Image List
-  {
-    const std::string image_list = g_config.root_path + "\\TemplateList.txt";
-    
-    std::string dir_name = image_list;
-    int idx = int(dir_name.size() - 1);
-    while (idx > 0 && dir_name[idx] != '\\') idx--;
-    dir_name = dir_name.substr(0, idx);
+  std::ifstream f(image_list);
+  if (f.good()) {
+    while (f.good()) {
+      std::string file_name, caption;
+      std::string line, x;
+      float scale = 1.0f;
 
-    std::ifstream f(image_list);
-    if (f.good()) {
-      while (f.good()) {
-        std::string file_name, caption;
-        std::string line, x;
-        float scale = 1.0f;
+      std::getline(f, line);
 
-        std::getline(f, line);
+      // Must use "No-BOM" mode
+      if (line[0] == '#') continue; // Commented out
 
-        // Must use "No-BOM" mode
-        if (line[0] == '#') continue; // Commented out
+      std::vector<std::string> sp;
+      for (int i = 0; i < line.size(); i++) {
+        if (line[i] == '\t') {
+          sp.push_back(x); x = "";
+        }
+        else {
+          x.push_back(line[i]);
+        }
+      }
+      if (x.size() > 0) sp.push_back(x);
 
-        std::vector<std::string> sp;
-        for (int i = 0; i < line.size(); i++) {
-          if (line[i] == '\t') {
-            sp.push_back(x); x = "";
+      if (sp.size() >= 2) {
+        MatchTemplate* t = new MatchTemplate();
+        file_name = dir_name + "\\" + sp[0]; caption = sp[1];
+
+        cv::Mat tmp = cv::imread(file_name.c_str(), cv::IMREAD_COLOR);
+        // Get base name, mask name and check if mask exists
+        {
+          std::string base_name = file_name.substr(0, file_name.size() - 4);
+          std::string ext_name = file_name.substr(file_name.size() - 3);
+          std::string mask_fn = base_name + "_mask." + ext_name;
+          FILE* f; fopen_s(&f, mask_fn.c_str(), "rb");
+          if (f) {
+            fclose(f);
+            t->mask = new cv::Mat();
+            *(t->mask) = cv::imread(mask_fn.c_str(), cv::IMREAD_COLOR);
+            cv::Mat tmp;
+            cv::resize(*(t->mask), tmp, cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
+            *(t->mask) = tmp;
+          }
+        }
+
+        bool use_canny = t->ShouldUseCanny();
+
+        if (sp.size() >= 3 && sp[2] != "NA") {
+          if (use_canny == true && g_canny_set_scale_1 == true) {
+            t->scale = 1.0f;
           }
           else {
-            x.push_back(line[i]);
+            scale = std::stof(sp[2]);
+            if (scale < 0 || scale > 1) scale = 0.5f;
+            t->scale = scale;
           }
         }
-        if (x.size() > 0) sp.push_back(x);
 
-        if (sp.size() >= 2) {
-          MatchTemplate* t = new MatchTemplate();
-          file_name = dir_name + "\\" + sp[0]; caption = sp[1];
-
-          cv::Mat tmp = cv::imread(file_name.c_str(), cv::IMREAD_COLOR);
-          // Get base name, mask name and check if mask exists
-          {
-            std::string base_name = file_name.substr(0, file_name.size() - 4);
-            std::string ext_name = file_name.substr(file_name.size() - 3);
-            std::string mask_fn = base_name + "_mask." + ext_name;
-            FILE* f; fopen_s(&f, mask_fn.c_str(), "rb");
-            if (f) {
-              fclose(f);
-              t->mask = new cv::Mat();
-              *(t->mask) = cv::imread(mask_fn.c_str(), cv::IMREAD_COLOR);
-              cv::Mat tmp;
-              cv::resize(*(t->mask), tmp, cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
-              *(t->mask) = tmp;
-            }
-          }
-
-          bool use_canny = t->ShouldUseCanny();
-
-          if (sp.size() >= 3 && sp[2] != "NA") {
-            if (use_canny == true && g_canny_set_scale_1 == true)  {
-              t->scale = 1.0f;
-            } else {
-              scale = std::stof(sp[2]);
-              if (scale < 0 || scale > 1) scale = 0.5f;
-              t->scale = scale;
-            }
-          }
-
-          if (use_canny) {
-            cv::Mat tmp1;
-            cv::Canny(tmp, tmp1, g_canny_thresh1, g_canny_thresh2);
-            cv::boxFilter(tmp1, tmp, -1, g_boxfilter_size);
-          }
-
-          if (sp.size() >= 4 && sp[3] != "NA") {
-            t->direction = std::stoi(sp[3]);
-          }
-
-          if (sp.size() >= 5 && sp[4] != "NA") {
-            t->group_id = std::stoi(sp[4]);
-          }
-
-          if (sp.size() >= 6 && sp[5] != "NA") {
-            t->scene_id = std::stoi(sp[5]);
-          }
-
-          if (sp.size() >= 7 && sp[6] != "NA") {
-            t->sqdiff_thresh = std::stof(sp[6]);
-          }
-
-          t->mat = new cv::Mat();
-
-          // Resize image and mask
-          cv::resize(tmp, *(t->mat), cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
-          if (t->mask != nullptr) {
-            cv::Mat tmp2;
-            cv::resize(*(t->mask), tmp2, cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
-            tmp2.copyTo(*(t->mask));
-          }
-
-          cv::Mat tmp1(t->mat->rows, t->mat->cols, t->mat->type());
-
-          // MBS to WCS
-          int len_caption = MultiByteToWideChar(CP_UTF8, 0, caption.c_str(), -1, NULL, NULL);
-          wchar_t* wcaption = new wchar_t[len_caption];
-          MultiByteToWideChar(CP_UTF8, 0, caption.c_str(), -1, wcaption, len_caption);
-          t->caption = wcaption;
-          delete wcaption;
-
-          printf("Loaded template [%s] = %dx%d, resized=%dx%d, has mask: %s\n",
-            file_name.c_str(), tmp.cols, tmp.rows, t->mat->cols, t->mat->rows,
-            (t->mask == nullptr ? "No" : "Yes"));
-          g_templates.push_back(t);
+        if (use_canny) {
+          cv::Mat tmp1;
+          cv::Canny(tmp, tmp1, g_canny_thresh1, g_canny_thresh2);
+          cv::boxFilter(tmp1, tmp, -1, g_boxfilter_size);
         }
+
+        if (sp.size() >= 4 && sp[3] != "NA") {
+          t->direction = std::stoi(sp[3]);
+        }
+
+        if (sp.size() >= 5 && sp[4] != "NA") {
+          t->group_id = std::stoi(sp[4]);
+        }
+
+        if (sp.size() >= 6 && sp[5] != "NA") {
+          t->scene_id = std::stoi(sp[5]);
+        }
+
+        if (sp.size() >= 7 && sp[6] != "NA") {
+          t->sqdiff_thresh = std::stof(sp[6]);
+        }
+
+        t->mat = new cv::Mat();
+
+        // Resize image and mask
+        cv::resize(tmp, *(t->mat), cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
+        if (t->mask != nullptr) {
+          cv::Mat tmp2;
+          cv::resize(*(t->mask), tmp2, cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
+          tmp2.copyTo(*(t->mask));
+        }
+
+        cv::Mat tmp1(t->mat->rows, t->mat->cols, t->mat->type());
+
+        // MBS to WCS
+        int len_caption = MultiByteToWideChar(CP_UTF8, 0, caption.c_str(), -1, NULL, NULL);
+        wchar_t* wcaption = new wchar_t[len_caption];
+        MultiByteToWideChar(CP_UTF8, 0, caption.c_str(), -1, wcaption, len_caption);
+        t->caption = wcaption;
+        delete wcaption;
+
+        // assign histogram if in debug mode
+        t->histogram = new MyHistogram(caption);
+
+        printf("Loaded template [%s] = %dx%d, resized=%dx%d, has mask: %s\n",
+          file_name.c_str(), tmp.cols, tmp.rows, t->mat->cols, t->mat->rows,
+          (t->mask == nullptr ? "No" : "Yes"));
+        g_templates.push_back(t);
       }
     }
   }
+}
+
+void LoadImagesFromResource() {
+  size_t sz;
+  const char* buf = (const char*)(mz_zip_reader_extract_file_to_heap(&g_archive_match_templates, "TemplateList.txt", &sz, 0));
+  int idx = 0;
+  while (idx < sz) {
+    std::string file_name, caption;
+    std::string line, x;
+    float scale = 1.0f;
+
+    // Get line
+    while (idx < sz) {
+      bool has_new_line = false;
+      while (idx < sz && (buf[idx] == '\n' || buf[idx] == '\r')) {
+        idx++;
+        has_new_line = true;
+      }
+
+      if (has_new_line) break;
+      
+      if (idx < sz) {
+        line.push_back(buf[idx]);
+        idx++;
+      }
+    }
+
+    printf("[LoadImagesFromResource] line=%s\n", line.c_str());
+
+    // "No-BOM UTF-8" mode
+    if (line.size() > 0 && line[0] == '#') continue; // Commented out
+    // "BOM UTF-8" mode
+    if ((line.size() > 3) && 
+        ((line[0] & 0xff) == 0xef) && // For signed chars, 1's will be prepended when promoting to signed int!
+        ((line[1] & 0xff) == 0xbb) && 
+        ((line[2] & 0xff) == 0xbf) && (line[3] == 0x23)) continue;
+
+    // Get line
+    std::vector<std::string> sp;
+    for (int i = 0; i < line.size(); i++) {
+      if (line[i] == '\t') {
+        sp.push_back(x); x = "";
+      }
+      else {
+        x.push_back(line[i]);
+      }
+    }
+    if (x.size() > 0) sp.push_back(x);
+
+    // Split line
+    if (sp.size() >= 2) {
+      MatchTemplate* t = new MatchTemplate();
+      file_name = sp[0]; caption = sp[1];
+      // No directories in zip file
+      file_name = file_name.substr(file_name.rfind('\\') + 1);
+
+      cv::Mat tmp;
+
+      size_t sz_img = 0;
+      unsigned char* buf_img = (unsigned char*)(mz_zip_reader_extract_file_to_heap(&g_archive_match_templates, file_name.c_str(), &sz_img, 0));
+      if (sz_img > 0 && buf_img != nullptr) {
+        cv::Mat raw_data_mat(1, sz_img, CV_8UC1, buf_img);
+        tmp = cv::imdecode(raw_data_mat, cv::IMREAD_COLOR);
+      }
+
+      // Get base name, mask name and check if mask exists
+      {
+        std::string base_name = file_name.substr(0, file_name.size() - 4);
+        std::string ext_name = file_name.substr(file_name.size() - 3);
+        std::string mask_fn = base_name + "_mask." + ext_name;
+        size_t sz_mask = 0;
+        unsigned char* buf_mask = (unsigned char*)(mz_zip_reader_extract_file_to_heap(&g_archive_match_templates, mask_fn.c_str(), &sz_mask, 0));
+        if (sz_mask > 0 && buf_mask != nullptr) {
+          t->mask = new cv::Mat();
+          cv::Mat raw_data_mat(1, sz_mask, CV_8UC1, buf_mask);
+          *(t->mask) = cv::imdecode(raw_data_mat, cv::IMREAD_COLOR);
+          cv::Mat tmp_mask;
+          cv::resize(*(t->mask), tmp_mask, cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
+          *(t->mask) = tmp_mask;
+        }
+        delete buf_mask;
+      }
+
+      bool use_canny = t->ShouldUseCanny();
+
+      if (sp.size() >= 3 && sp[2] != "NA") {
+        if (use_canny == true && g_canny_set_scale_1 == true) {
+          t->scale = 1.0f;
+        }
+        else {
+          scale = std::stof(sp[2]);
+          if (scale < 0 || scale > 1) scale = 0.5f;
+          t->scale = scale;
+        }
+      }
+
+      if (use_canny) {
+        cv::Mat tmp1;
+        cv::Canny(tmp, tmp1, g_canny_thresh1, g_canny_thresh2);
+        cv::boxFilter(tmp1, tmp, -1, g_boxfilter_size);
+      }
+
+      if (sp.size() >= 4 && sp[3] != "NA") {
+        t->direction = std::stoi(sp[3]);
+      }
+
+      if (sp.size() >= 5 && sp[4] != "NA") {
+        t->group_id = std::stoi(sp[4]);
+      }
+
+      if (sp.size() >= 6 && sp[5] != "NA") {
+        t->scene_id = std::stoi(sp[5]);
+      }
+
+      if (sp.size() >= 7 && sp[6] != "NA") {
+        t->sqdiff_thresh = std::stof(sp[6]);
+      }
+
+      t->mat = new cv::Mat();
+
+      // Resize image and mask
+      cv::resize(tmp, *(t->mat), cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
+      if (t->mask != nullptr) {
+        cv::Mat tmp2;
+        cv::resize(*(t->mask), tmp2, cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
+        tmp2.copyTo(*(t->mask));
+      }
+
+      cv::Mat tmp1(t->mat->rows, t->mat->cols, t->mat->type());
+
+      // MBS to WCS
+      int len_caption = MultiByteToWideChar(CP_UTF8, 0, caption.c_str(), -1, NULL, NULL);
+      wchar_t* wcaption = new wchar_t[len_caption];
+      MultiByteToWideChar(CP_UTF8, 0, caption.c_str(), -1, wcaption, len_caption);
+      t->caption = wcaption;
+      delete wcaption;
+
+
+      // assign histogram if in debug mode
+      t->histogram = new MyHistogram(caption);
+
+      printf("Loaded template [%s] = %dx%d, resized=%dx%d, has mask: %s\n",
+        file_name.c_str(), tmp.cols, tmp.rows, t->mat->cols, t->mat->rows,
+        (t->mask == nullptr ? "No" : "Yes"));
+      g_templates.push_back(t);
+    }
+  }
+}
+
+void LoadImagesAndInitWorkerThreads() {
+
+  InitializeCriticalSection(&g_critsect_rectlist);
+  InitializeCriticalSection(&g_calc_dimension);
+  InitializeCriticalSection(&g_pnl_workq_critsect);
+  InitializeCriticalSection(&g_pnl_mask_critsect);
 
   g_detector_thd_handle = CreateThread(
     nullptr,
@@ -742,21 +958,33 @@ void LoadImagesAndInitDetectThread() {
     &g_detector_thd_id
   );
 
+  g_pnl_highlight_thd_handle = CreateThread(
+    nullptr,
+    0,
+    PnlHighlightThdStart,
+    &g_ClosedCaption,
+    0,
+    &g_pnl_highlight_thd_id
+  );
 }
 
 void DrawHighlightRects() {
+  EnterCriticalSection(&g_critsect_rectlist);
   BackupD3D9RenderState();
 
   for (const MatchResult& mr : highlight_rects) {
     const struct MatchTemplate& t = *(g_templates[mr.idx]);
     const std::wstring& caption = t.caption;
-    
+    D3DCOLOR border_color = D3DCOLOR_ARGB(16, 255, 255, 255);
+
     // Measure text width
     RECT cr; // CR = Caption Rect
     g_font->DrawTextW(NULL, caption.c_str(), caption.size(), &cr, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
 
     RECT r = mr.rect_orig;
-    DrawBorderedRectangle(r.left, r.top, (r.right - r.left), (r.bottom - r.top), D3DCOLOR_ARGB(0, 0, 0, 0), D3DCOLOR_ARGB(255, 32, 255, 32));
+    if (g_ClosedCaption.IsDebug()) {
+      DrawBorderedRectangle(r.left, r.top, (r.right - r.left), (r.bottom - r.top), D3DCOLOR_ARGB(0, 0, 0, 0), D3DCOLOR_ARGB(255, 32, 255, 32));
+    }
 
     RECT d = { 0,0,0,0 };
     
@@ -785,7 +1013,7 @@ void DrawHighlightRects() {
     d.right = d.left + (cr.right - cr.left);
     d.bottom = d.top + (cr.bottom - cr.top);
 
-    DrawBorderedRectangle(d.left, d.top, (d.right - d.left), (d.bottom - d.top), D3DCOLOR_ARGB(128, 102, 52, 35), D3DCOLOR_ARGB(255, 255, 255, 255));
+    DrawBorderedRectangle(d.left, d.top, (d.right - d.left), (d.bottom - d.top), D3DCOLOR_ARGB(128, 102, 52, 35), border_color);
     g_font->DrawTextW(0, caption.c_str(), caption.size(), &d, DT_NOCLIP, D3DCOLOR_ARGB(255, 255, 255, 255));
   }
 
@@ -796,4 +1024,5 @@ void DrawHighlightRects() {
   }
 
   RestoreD3D9RenderState();
+  LeaveCriticalSection(&g_critsect_rectlist);
 }

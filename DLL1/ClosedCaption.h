@@ -95,54 +95,7 @@ class ClosedCaption {
       }
     }
 
-    void LoadSeqDlgIndexFromMemory(void* ptr, int len) {
-      char* p = (char*)ptr;
-      int idx = 0, num_ety = 0;
-      std::string line;
-      while (idx <= len) {
-        if (idx == len || p[idx] == '\r' || p[idx] == '\n') {
-          if (line.size() > 0) {
-            // getline ok
-            std::istringstream is(line);
-            std::vector<std::string> sp;
-            while (is.good()) {
-              std::string x;
-              is >> x;
-              sp.push_back(x);
-            }
-            line = "";
-
-            std::string content, who; int id;
-
-            if (sp.size() >= 3) {
-              id = atoi(sp[0].c_str());
-              content = sp.back();
-              for (int i = 1; i < int(sp.size()) - 1; i++) {
-                if (who != "") who += " ";
-                who = who + sp[i];
-              }
-
-              all_story_ids.insert(id);
-            }
-
-            if (who.size() > 0) {
-              index[std::make_pair(who, content)].insert(id);
-              num_ety++;
-            }
-          }
-        }
-        else {
-          if (idx < len) {
-            line.push_back(p[idx]);
-          }
-          else {
-            break;
-          }
-        }
-        idx++;
-      }
-      printf("[LoadIndexFromMemory] |all_story_ids|=%lu\n", all_story_ids.size());
-    }
+    void LoadSeqDlgIndexFromMemory(void* ptr, int len);
 
     // CSV分隔，[ID, Char_CHS, CHS, Char_ENG, ENG_Rev]
     void LoadEngChsParallelText(const char* fn);
@@ -150,6 +103,8 @@ class ClosedCaption {
     void LoadEngChsParallelTextFromMemory(const char* ptr, int len);
 
     void LoadProperNamesList(const char* fn);
+
+    void LoadProperNamesListFromMemory(const char* ptr, int len);
 
     void OnFuncTalk(const char* who, const char* content);
 
@@ -182,9 +137,8 @@ class ClosedCaption {
     int last_highlight_idx;
     std::map<std::pair<float, float>, std::wstring> millis2word;
     std::set<std::pair<int, int> > proper_noun_ranges;
-    std::vector<bool> proper_noun_mask;
 
-    void LoadDummy();
+    void LoadDummy(const wchar_t* msg);
 
     void UpdateMousePos(int mx, int my);
 
@@ -196,8 +150,9 @@ class ClosedCaption {
 
     void FindKeywordsForHighlighting();
 
+    void do_FindKeywordsForHighlighting(std::wstring work);
+
     void Clear() {
-      proper_noun_mask.clear();
       proper_noun_ranges.clear();
       millis2word.clear();
     }
