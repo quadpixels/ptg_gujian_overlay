@@ -27,7 +27,7 @@ extern int FONT_SIZE;
 
 extern void BackupD3D9RenderState();
 extern void RestoreD3D9RenderState();
-extern void InitFont(int size); // in dll1.cpp
+extern void InitFont(LPD3DXFONT* pfont, int size); // in dll1.cpp
 extern MyMessageBox* g_dbg_messagebox;
 extern mz_zip_archive g_archive_match_templates;
 
@@ -168,7 +168,7 @@ void DetermineUIScaleFactor(const int w, const int h) {
   if (g_ui_scale_factor != g_ui_scale_prev) {
     printf("[DetermineUIScaleFactor] %d x %d, scale_factor=%g\n", w, h, g_ui_scale_factor);
     g_ui_scale_prev = g_ui_scale_factor;
-    InitFont(FONT_SIZE * g_ui_scale_factor);
+    InitFont(&g_font, FONT_SIZE * g_ui_scale_factor);
   }
 
   // Determine location of dialog box

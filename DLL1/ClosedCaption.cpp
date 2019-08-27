@@ -707,7 +707,10 @@ int ClosedCaption::SetAlignmentFileByAudioID(int id) {
 
 void ClosedCaption::LoadDummy(const wchar_t* msg) {
   wchar_t s[233];
-  if (msg == nullptr) swprintf_s(s, L"Hover/Right shift to reveal; Right mouse click to drag around");
+  if (msg == nullptr) {
+   // swprintf_s(s, L"Hover/Right shift to reveal; Right mouse click to drag around");
+    swprintf_s(s, L"Are you on your way to place the grass bundle on Goddess Nüwa's shoulder? Mom said");
+  }
   else swprintf_s(s, msg);
 
   millis2word.clear();
