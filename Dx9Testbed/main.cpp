@@ -63,7 +63,7 @@ void InitD3D(HWND hwnd) {
   }
 
   h = D3DXCreateFontA(g_d3ddev, 18, 0, 0, 0, false, DEFAULT_CHARSET, OUT_CHARACTER_PRECIS,
-    CLEARTYPE_QUALITY, DEFAULT_PITCH, "KaiTi", &g_font);
+    CLEARTYPE_QUALITY, DEFAULT_PITCH, "AR PL UKai CN", &g_font);
   if (FAILED(h)) {
     printf("Failed to create font! %X\n", h);
     assert(0);
