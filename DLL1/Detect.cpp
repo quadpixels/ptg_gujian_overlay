@@ -86,7 +86,10 @@ struct MatchTemplate {
   int group_id; // Only 1 instance may appear in one. 0 = ignore
   int scene_id;
 
-  float sqdiff_thresh;
+  union {
+    float sqdiff_thresh; // Used for templates with masks, b/c only SQDiff metric is available for masked images
+    float coeff_thresh; // Used for templates without masks
+  } threshs;
 
   // 动态属性
   int last_frame_match_count;
@@ -102,7 +105,7 @@ struct MatchTemplate {
     scene_id = 0;
 
     last_frame_match_count = 0;
-    sqdiff_thresh = 100.0f;
+    threshs.sqdiff_thresh = 100.0f;
   }
 
   bool ShouldUseCanny() const { 
@@ -137,7 +140,6 @@ bool g_use_canny = false;
 bool g_canny_set_scale_1 = false;
 float g_canny_thresh1 = 100.0f, g_canny_thresh2 = 200.0f;
 cv::Size g_boxfilter_size = cv::Size(4, 4);
-float g_ccoeff_thresh = 0.7f;
 int g_last_scene_id = -999;
 
 bool g_dialog_box_gone = false;
@@ -330,7 +332,7 @@ void DoDetect(unsigned char* chr, const int len) {
       }
     }
 
-    printf("sc_outer=%d sc_inner=%d\n", sc_outer, sc_inner);
+    //printf("sc_outer=%d sc_inner=%d\n", sc_outer, sc_inner);
 
     if (sc_outer > 1.25 * sc_inner) {
       g_dialog_box_gone = false;
@@ -461,7 +463,7 @@ void DoDetect(unsigned char* chr, const int len) {
         thresh_mult = 3.0f;
       }
 
-      if (min_val < g_templates[i]->sqdiff_thresh * thresh_mult) {
+      if (min_val < g_templates[i]->threshs.sqdiff_thresh * thresh_mult) {
         found = true;
       }
       break;
@@ -469,7 +471,7 @@ void DoDetect(unsigned char* chr, const int len) {
       ans = max_loc;
       metric = max_val;
       if (mode == cv::TM_CCOEFF_NORMED) {
-        if (metric > g_ccoeff_thresh) {
+        if (metric > g_templates[i]->threshs.coeff_thresh) {
           found = true;
         }
       }
@@ -554,6 +556,9 @@ void DoDetect(unsigned char* chr, const int len) {
 
       if (group_id != 0) groups.insert(group_id);
       curr_scene = scene_id;
+    }
+    else {
+      g_match_cache.erase(g_templates[i]);
     }
   }
   g_last_scene_id = curr_scene;
@@ -649,9 +654,17 @@ void DoCheckMatchesDisappear(unsigned char* chr, const int len) {
     double min_val, max_val;
     cv::minMaxLoc(result, &min_val, &max_val, &min_loc, &max_loc, cv::Mat());
     double metric = max_val;
-    printf("[%d], metric=%g\n", idx, metric);
-    if (metric < g_ccoeff_thresh) {
-      victim_idxes.insert(idx);
+    
+    if (mt.mask != nullptr) {
+      if (metric > mt.threshs.sqdiff_thresh) {
+        metric = min_val;
+        victim_idxes.insert(idx);
+      }
+    }
+    else {
+      if (metric < mt.threshs.coeff_thresh) {
+        victim_idxes.insert(idx);
+      }
     }
 
     cropped.release();
@@ -711,7 +724,7 @@ void LoadImagesFromFile() // Read Image List
       if (sp.size() >= 2) {
         MatchTemplate* t = new MatchTemplate();
         file_name = dir_name + "\\" + sp[0]; caption = sp[1];
-
+        bool has_mask = false;
         cv::Mat tmp = cv::imread(file_name.c_str(), cv::IMREAD_COLOR);
         // Get base name, mask name and check if mask exists
         {
@@ -726,6 +739,7 @@ void LoadImagesFromFile() // Read Image List
             cv::Mat tmp;
             cv::resize(*(t->mask), tmp, cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
             *(t->mask) = tmp;
+            has_mask = true;
           }
         }
 
@@ -761,7 +775,13 @@ void LoadImagesFromFile() // Read Image List
         }
 
         if (sp.size() >= 7 && sp[6] != "NA") {
-          t->sqdiff_thresh = std::stof(sp[6]);
+          float thresh = std::stof(sp[6]);
+          if (!has_mask) t->threshs.sqdiff_thresh = thresh;
+          else t->threshs.coeff_thresh = thresh;
+        }
+        else {
+          if (!has_mask) t->threshs.sqdiff_thresh = 10.0f; // smaller than this value  --> template is detected
+          else t->threshs.coeff_thresh = 0.7f; // larger than this value --> template is detected
         }
 
         t->mat = new cv::Mat();
@@ -848,6 +868,7 @@ void LoadImagesFromResource() {
       file_name = sp[0]; caption = sp[1];
       // No directories in zip file
       file_name = file_name.substr(file_name.rfind('\\') + 1);
+      bool has_mask = false;
 
       cv::Mat tmp;
 
@@ -872,6 +893,7 @@ void LoadImagesFromResource() {
           cv::Mat tmp_mask;
           cv::resize(*(t->mask), tmp_mask, cv::Size(0, 0), scale, scale, cv::INTER_LINEAR);
           *(t->mask) = tmp_mask;
+          has_mask = true;
         }
         delete buf_mask;
       }
@@ -908,7 +930,13 @@ void LoadImagesFromResource() {
       }
 
       if (sp.size() >= 7 && sp[6] != "NA") {
-        t->sqdiff_thresh = std::stof(sp[6]);
+        float thresh = std::stof(sp[6]);
+        if (!has_mask) t->threshs.sqdiff_thresh = thresh;
+        else t->threshs.coeff_thresh = thresh;
+      }
+      else {
+        if (!has_mask) t->threshs.sqdiff_thresh = 10.0f; // smaller than this value  --> template is detected
+        else t->threshs.coeff_thresh = 0.7f; // larger than this value --> template is detected
       }
 
       t->mat = new cv::Mat();

@@ -708,8 +708,7 @@ int ClosedCaption::SetAlignmentFileByAudioID(int id) {
 void ClosedCaption::LoadDummy(const wchar_t* msg) {
   wchar_t s[233];
   if (msg == nullptr) {
-   // swprintf_s(s, L"Hover/Right shift to reveal; Right mouse click to drag around");
-    swprintf_s(s, L"Are you on your way to place the grass bundle on Goddess Nüwa's shoulder? Mom said");
+     swprintf_s(s, L"Hover/[Right Shift] to reveal; Right mouse click to drag around");
   }
   else swprintf_s(s, msg);
 
@@ -1021,7 +1020,7 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
         std::wstring fulltext = GetFullLine();
         std::wstring key = fulltext.substr(itr->first, itr->second);
         std::wstring desc = proper_names[key];
-        std::wstring txt = L"【" + key + L"】：" + desc;
+        std::wstring txt = L"【" + key + L"】\n" + desc;
         
         if (popup_txt.size() > 0)
           popup_txt += L"；";
@@ -1082,7 +1081,7 @@ void ClosedCaption::FadeOut() {
   if (opacity <= 0.0f) return;
   long long millis = MillisecondsNow();
   if (millis < fade_end_millis && opacity_end == 0.0f) return;
-  printf("[FadeOut]\n");
+  printf("[FadeOut] %g\n", opacity);
   opacity_start = opacity;
   fade_end_millis = millis + FADE_OUT_MILLIS;
   fade_duration = FADE_OUT_MILLIS;
@@ -1103,9 +1102,12 @@ void MyMessageBox::CalculateDimension() {
   std::wstring line, curr_word;
   for (int i = 0; i <= int(message.size()); i++) {
     bool is_push = false;
-    wchar_t ch = L'\0';
-    if (i < message.size()) {
+    wchar_t ch = L'\0', ch_next = L'\0';
+    if (i < int(message.size())) {
       ch = message[i];
+      if (i + 1 < int(message.size())) {
+        ch_next = message[i + 1];
+      }
     }
 
     RECT rect;
@@ -1126,6 +1128,12 @@ void MyMessageBox::CalculateDimension() {
       lines.push_back(line);
       curr_word = line = L"";
     } 
+    else if ((ch == L'\\') && (ch_next == L'n' || ch_next == L'r')) {
+      i++;
+      line = line + curr_word;
+      lines.push_back(line);
+      curr_word = line = L"";
+    }
     else if (ch == L' ' || i == message.size()) {
       if (line_w + word_w > w) {
         lines.push_back(line);

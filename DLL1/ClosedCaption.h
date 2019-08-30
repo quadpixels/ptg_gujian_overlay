@@ -287,3 +287,7 @@ class ClosedCaption {
     void Draw();
     void Hide() { w = h = 0; x = -999; y = -999; }
   };
+
+  class VideoSubtitles {
+
+  };
