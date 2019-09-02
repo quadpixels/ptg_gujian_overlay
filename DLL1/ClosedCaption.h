@@ -289,5 +289,30 @@ class ClosedCaption {
   };
 
   class VideoSubtitles {
-
+  public:
+    std::vector<std::wstring> subtitles;
+    std::vector<int> millisecs;
+    long start_millis;
+    int curr_idx;
+    enum State {
+      SUBTITLES_NOT_STARTED,
+      SUBTITLES_PLAYING,
+      SUBTITLES_ENDED,
+    };
+    State state;
+    void Init(std::vector<std::wstring> _subtitles, std::vector<int> _millisecs) {
+      subtitles = _subtitles;
+      millisecs = _millisecs;
+      curr_idx = -999;
+      state = SUBTITLES_NOT_STARTED;
+      messagebox = nullptr;
+    }
+    VideoSubtitles() { }
+    MyMessageBox* messagebox;
+    void Draw();
+    void Update();
+    void Start();
+    void Stop();
+    void do_SetIdx(int idx);
+    void LoadFromMemory(const char*, int);
   };

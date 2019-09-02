@@ -25,10 +25,10 @@
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="ClosedCaption.h" />
-    <ClInclude Include="resource.h">
+    <ClInclude Include="config.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="config.h">
+    <ClInclude Include="resource1.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -48,8 +48,25 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="Dll1.rc">
+    <ResourceCompile Include="Resource.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\..\Downloads\Gujian Resources\dialog_aligned.gz" />
+    <None Include="..\..\..\Downloads\Gujian Resources\inv_idx_zipped.gz" />
+    <None Include="dialog_a.bin">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="rcdata1.bin">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="..\..\..\Downloads\Gujian Resources\parallel_text.gz" />
+    <None Include="..\..\..\Downloads\Gujian Resources\match_templates.gz" />
+    <None Include="..\..\..\Downloads\Gujian Resources\miscellaneous_files.gz" />
+    <None Include="..\AR PL UKai CN, Regular.ttc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Font Include="..\KAIU.ttf" />
   </ItemGroup>
 </Project>
