@@ -132,6 +132,9 @@ SetAudioID g_dll1_setaudioid;
 typedef void(*DetermineUIScaleFactor)(int, int);
 DetermineUIScaleFactor g_dll1_determine_ui_scale;
 
+typedef void(*ShowVideoSubtitles)(const std::string&);
+ShowVideoSubtitles g_dll1_showvideosubtitles;
+
 void LoadDLL() {
   g_hmodule_dll1 = LoadLibrary(L"ptg_overlay.dll"); // <-- CWD !
   
@@ -140,6 +143,7 @@ void LoadDLL() {
     g_dll1_onpresent = (Dll1OnPresent)(GetProcAddress(g_hmodule_dll1, MAKEINTRESOURCEA(3)));
     g_dll1_setaudioid = (SetAudioID)(GetProcAddress(g_hmodule_dll1, MAKEINTRESOURCEA(4)));
     g_dll1_determine_ui_scale = (DetermineUIScaleFactor)(GetProcAddress(g_hmodule_dll1, MAKEINTRESOURCEA(5)));
+    g_dll1_showvideosubtitles = (ShowVideoSubtitles)(GetProcAddress(g_hmodule_dll1, MAKEINTRESOURCEA(6)));
 
     if (g_dll1_setd3d9deviceptr) {
       g_dll1_setd3d9deviceptr(g_d3ddev);
@@ -218,9 +222,14 @@ void OnKeyDown(WPARAM wParam, LPARAM lParam) {
     printf("CMD: %s\n", g_cmd.c_str());
     break;
   case VK_RETURN: {
-    int id = atoi(g_cmd.c_str());
-    g_cmd = "";
-    g_dll1_setaudioid(id);
+    if (g_cmd == "INTRO") {
+      g_dll1_showvideosubtitles("intro");
+    }
+    else {
+      int id = atoi(g_cmd.c_str());
+      g_cmd = "";
+      g_dll1_setaudioid(id);
+    }
     break;
   }
   case VK_LEFT: case VK_UP: {

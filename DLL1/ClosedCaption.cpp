@@ -22,6 +22,7 @@ IDirect3DStateBlock9* g_pStateBlock;
 extern mz_zip_archive g_archive_dialog_aligned;
 extern RECT g_curr_dialogbox_rect; // Detect.cpp
 extern float g_ui_scale_factor;
+extern int g_win_w, g_win_h;
 
 std::wstring g_header1 = L"";
 
@@ -720,10 +721,7 @@ void ClosedCaption::LoadDummy(const wchar_t* msg) {
     millis2word[std::make_pair(t0, t1)] = this_one;
   }
   
-  //start_millis = MillisecondsNow();
   caption_state = CAPTION_PLAYING_NO_TIMELINE;
-  //ComputeBoundingBoxPerChar();
-  //FindKeywordsForHighlighting();
 }
 
 void ClosedCaption::FindKeywordsForHighlighting() {
@@ -1186,4 +1184,102 @@ void MyMessageBox::Draw() {
     rect.top = y + i * int(FONT_SIZE * g_ui_scale_factor);
     g_font->DrawTextW(NULL, line.c_str(), wcslen(line.c_str()), &rect, DT_NOCLIP, D3DCOLOR_ARGB(255, 255, 255, 255));
   }
+}
+
+void VideoSubtitles::Draw() {
+  // create MessageBox if not exists
+  if (state == SUBTITLES_PLAYING) {
+    if (messagebox) messagebox->Draw();
+  }
+}
+
+void VideoSubtitles::Start() {
+  start_millis = MillisecondsNow();
+  state = SUBTITLES_PLAYING;
+  do_SetIdx(0);
+}
+
+void VideoSubtitles::Stop() {
+  state = SUBTITLES_NOT_STARTED;
+}
+
+void VideoSubtitles::Update() {
+  if (state == SUBTITLES_NOT_STARTED || state == SUBTITLES_ENDED) return;
+
+  const long long millis = MillisecondsNow();
+  long long deadline = 0, elapsed = 0;
+  switch (state) {
+  case SUBTITLES_NOT_STARTED: break;
+  case SUBTITLES_PLAYING:
+    elapsed = millis - start_millis;
+    while (curr_idx + 1 < int(millisecs.size()) &&
+           elapsed > millisecs[curr_idx+1]) {
+      curr_idx++;
+    }
+    if (curr_idx == int(millisecs.size() - 1)) Stop();
+    else {
+      do_SetIdx(curr_idx);
+    }
+    break;
+  case SUBTITLES_ENDED:
+    break;
+  }
+}
+
+void VideoSubtitles::do_SetIdx(int idx) {
+  curr_idx = idx;
+  std::wstring txt = L"";
+  if (curr_idx >= 0 && curr_idx < int(millisecs.size())) {
+    txt = subtitles[curr_idx];
+  } else if (curr_idx >= int(millisecs.size())) {
+    state = SUBTITLES_ENDED;
+  }
+  if (messagebox == nullptr) {
+    messagebox = new MyMessageBox();
+  }
+  messagebox->SetText(txt, 640 * g_ui_scale_factor);
+  messagebox->w = int(640 * g_ui_scale_factor);
+  messagebox->h = int(64 * g_ui_scale_factor);
+  messagebox->x = int(g_win_w / 2 - messagebox->w / 2);
+  messagebox->y = g_win_h - 5 - messagebox->h;
+  messagebox->CalculateDimension();
+}
+
+void VideoSubtitles::LoadFromMemory(const char* ptr, int len) {
+  subtitles.clear();
+  millisecs.clear();
+
+  int idx = 0, num_entries = 0;
+  while (idx < len) {
+    int term;
+    std::string x;
+
+    // Get Line
+    std::string line = MyGetLineFromMemory(ptr, &idx, len);
+    if (line[0] == '#') continue;
+
+    // Split
+    std::vector<std::string> sp = MySplitString(line, '\t');
+
+    // MBS -> WCS
+    if (sp.size() == 1) sp.push_back("");
+
+    if (sp.size() >= 2) {
+      int millis = std::atoi(sp[0].c_str());
+      millisecs.push_back(millis);
+
+      int len_defn = MultiByteToWideChar(CP_UTF8, 0, sp[1].c_str(), -1, NULL, NULL);
+      wchar_t* wdefn = new wchar_t[len_defn];
+      MultiByteToWideChar(CP_UTF8, 0, sp[1].c_str(), -1, wdefn, len_defn);
+      std::wstring wsdefn = wdefn;
+      delete wdefn;
+
+      subtitles.push_back(wsdefn);
+      num_entries++;
+    }
+  }
+
+  Init(subtitles, millisecs);
+
+  printf("Video subtitles with %d entries scanned from memory\n", num_entries);
 }

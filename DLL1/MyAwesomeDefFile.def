@@ -5,3 +5,4 @@ EXPORTS
    OnPresent    @3
    SetAudioID   @4
    DetermineUIScaleFactor @5
+   ShowVideoSubtitles @6
