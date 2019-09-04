@@ -33,6 +33,8 @@ DWORD  g_pnl_highlight_thd_id;
 std::list<std::wstring> g_pnl_workqueue; // Q is safe for extreme cases (e.g. when some user issues 10000 changes in a second)
 CRITICAL_SECTION g_pnl_workq_critsect, g_pnl_mask_critsect;
 
+extern void ShowVideoSubtitles(const std::string& tag);
+
 DWORD WINAPI PnlHighlightThdStart(LPVOID lpParam) {
   ClosedCaption* cc = (ClosedCaption*)lpParam;
   while (true) {
@@ -356,6 +358,11 @@ void ClosedCaption::Update() {
       dialogbox_maybe_gone) {
       caption_state = CAPTION_NOT_PLAYING;
       
+      // Show credit screen
+      if (curr_story_idx == 100247) {
+        ShowVideoSubtitles("credits");
+      }
+
       {
         opacity_start = opacity;
         fade_end_millis = millis + FADE_OUT_MILLIS;
@@ -1128,6 +1135,7 @@ void MyMessageBox::CalculateDimension() {
     } 
     else if ((ch == L'\\') && (ch_next == L'n' || ch_next == L'r')) {
       i++;
+      if (line.size() > 0) line = line + L" ";
       line = line + curr_word;
       lines.push_back(line);
       curr_word = line = L"";
@@ -1171,25 +1179,52 @@ void MyMessageBox::SetText(const std::wstring& msg, int width_limit) {
   x = y = h = 0;
 }
 
-void MyMessageBox::Draw() {
-  {
-    D3DCOLOR bkcolor = D3DCOLOR_ARGB(128, 102, 52, 35), bordercolor = D3DCOLOR_XRGB(255, 255, 255);
-    DrawBorderedRectangle(x, y, w, h, bkcolor, bordercolor);
+void MyMessageBox::Draw(D3DCOLOR bkcolor, D3DCOLOR bordercolor, D3DCOLOR fontcolor) {
+  int dx = x, dy = y;
+  switch (gravity) {
+    case 2: case 6: dy -= h / 2; break; // Vertically centered
+    case 3: case 4: case 5: dy -= h; break; // Vertically aligned to bottom
   }
-
+  switch (gravity) {
+    case 0: case 4: dx -= h / 2; break; // Horizontally centered
+    case 1: case 2: case 3: dx -= h; break; // Horizontally aligned to right
+  }
+  DrawBorderedRectangle(dx, dy, w, h, bkcolor, bordercolor);
   for (int i = 0; i < lines.size(); i++) {
     std::wstring& line = lines[i];
     RECT rect;
-    rect.left = x;
-    rect.top = y + i * int(FONT_SIZE * g_ui_scale_factor);
-    g_font->DrawTextW(NULL, line.c_str(), wcslen(line.c_str()), &rect, DT_NOCLIP, D3DCOLOR_ARGB(255, 255, 255, 255));
+    g_font->DrawTextW(NULL, line.c_str(), wcslen(line.c_str()), &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
+    int txt_width = rect.right - rect.left;
+    if (text_align < 0) {
+      rect.left = dx;
+    }
+    else if (text_align == 0) {
+      rect.left = dx + w / 2 - txt_width / 2;
+    }
+    else {
+      rect.left = dx + w - txt_width;
+    }
+    rect.top = dy + i * int(FONT_SIZE * g_ui_scale_factor);
+    g_font->DrawTextW(NULL, line.c_str(), wcslen(line.c_str()), &rect, DT_NOCLIP, fontcolor);
   }
+}
+
+void MyMessageBox::Draw() {
+  D3DCOLOR bkcolor = D3DCOLOR_ARGB(128, 102, 52, 35), bordercolor = D3DCOLOR_ARGB(32, 255, 255, 255), fontcolor = D3DCOLOR_ARGB(255, 255, 255, 255);
+  Draw(bkcolor, bordercolor, fontcolor);
 }
 
 void VideoSubtitles::Draw() {
   // create MessageBox if not exists
+  if (GetCurrString() == L"") return;
   if (state == SUBTITLES_PLAYING) {
-    if (messagebox) messagebox->Draw();
+    if (messagebox) {
+      BackupD3D9RenderState();
+      float o = GetCurrOpacity();
+      D3DCOLOR bkcolor = D3DCOLOR_ARGB(int(128 * o), 102, 52, 35), bordercolor = D3DCOLOR_ARGB(int(32 * o), 255, 255, 255), fontcolor = D3DCOLOR_ARGB(int(255 * o), 255, 255, 255);
+      messagebox->Draw(bkcolor, bordercolor, fontcolor);
+      RestoreD3D9RenderState();
+    }
   }
 }
 
@@ -1237,11 +1272,13 @@ void VideoSubtitles::do_SetIdx(int idx) {
   if (messagebox == nullptr) {
     messagebox = new MyMessageBox();
   }
-  messagebox->SetText(txt, 640 * g_ui_scale_factor);
-  messagebox->w = int(640 * g_ui_scale_factor);
+  messagebox->SetText(txt, 800 * g_ui_scale_factor);
+  messagebox->w = int(800 * g_ui_scale_factor);
   messagebox->h = int(64 * g_ui_scale_factor);
   messagebox->x = int(g_win_w / 2 - messagebox->w / 2);
-  messagebox->y = g_win_h - 5 - messagebox->h;
+  messagebox->y = int(g_win_h - 10 * g_ui_scale_factor);
+  messagebox->text_align = 0;
+  messagebox->gravity = 4;
   messagebox->CalculateDimension();
 }
 
@@ -1282,4 +1319,27 @@ void VideoSubtitles::LoadFromMemory(const char* ptr, int len) {
   Init(subtitles, millisecs);
 
   printf("Video subtitles with %d entries scanned from memory\n", num_entries);
+}
+
+std::wstring VideoSubtitles::GetCurrString() {
+  if (curr_idx < 0 || curr_idx >= subtitles.size()) return L"";
+  else return subtitles[curr_idx];
+}
+
+float VideoSubtitles::GetCurrOpacity() {
+  const int FADE_MILLIS = 300;
+  int elapsed = MillisecondsNow() - start_millis;
+  if (curr_idx >= 0 && curr_idx < int(millisecs.size())) {
+    int dist_begin = elapsed - millisecs[curr_idx];
+    int dist_end = (curr_idx < int(millisecs.size() - 1)) ? millisecs[curr_idx + 1] - elapsed : 1000000007;
+    float opacity = 1.0f;
+    if (dist_end < FADE_MILLIS) {
+      opacity = (1.0f * dist_end) / float(FADE_MILLIS);
+    }
+    if (dist_begin < FADE_MILLIS) {
+      opacity = (1.0f * dist_begin) / float(FADE_MILLIS);
+    }
+    return opacity;
+  }
+  return 0.0f;
 }
