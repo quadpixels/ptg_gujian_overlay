@@ -276,15 +276,19 @@ class ClosedCaption {
     std::vector<std::wstring> lines;
     std::wstring message;
     int x, y, w, h;
-
+    char gravity; // 7 0 1
+                  // 6   2
+                  // 5 4 3
+    char text_align; // 0: Centered, -1: Left-Align, 1: Right-align
     static void StaticInit();
 
-    MyMessageBox() { }
+    MyMessageBox() : gravity(0), text_align(-1) { }
     ~MyMessageBox() { }
 
     void SetText(const std::wstring& msg, int width_limit);
     void CalculateDimension();
     void Draw();
+    void Draw(D3DCOLOR bkcolor, D3DCOLOR bordercolor, D3DCOLOR fontcolor);
     void Hide() { w = h = 0; x = -999; y = -999; }
   };
 
@@ -309,10 +313,13 @@ class ClosedCaption {
     }
     VideoSubtitles() { }
     MyMessageBox* messagebox;
+    std::wstring GetCurrString();
     void Draw();
     void Update();
     void Start();
     void Stop();
     void do_SetIdx(int idx);
     void LoadFromMemory(const char*, int);
+  public:
+    float GetCurrOpacity();
   };

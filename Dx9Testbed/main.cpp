@@ -225,6 +225,9 @@ void OnKeyDown(WPARAM wParam, LPARAM lParam) {
     if (g_cmd == "INTRO") {
       g_dll1_showvideosubtitles("intro");
     }
+    else if (g_cmd == "CREDITS") {
+      g_dll1_showvideosubtitles("credits");
+    }
     else {
       int id = atoi(g_cmd.c_str());
       g_cmd = "";
