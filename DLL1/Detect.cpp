@@ -840,8 +840,6 @@ void LoadImagesFromResource() {
       }
     }
 
-    printf("[LoadImagesFromResource] line=%s\n", line.c_str());
-
     // "No-BOM UTF-8" mode
     if (line.size() > 0 && line[0] == '#') continue; // Commented out
     // "BOM UTF-8" mode
@@ -958,13 +956,9 @@ void LoadImagesFromResource() {
       t->caption = wcaption;
       delete wcaption;
 
-
       // assign histogram if in debug mode
       t->histogram = new MyHistogram(caption);
 
-      printf("Loaded template [%s] = %dx%d, resized=%dx%d, has mask: %s\n",
-        file_name.c_str(), tmp.cols, tmp.rows, t->mat->cols, t->mat->rows,
-        (t->mask == nullptr ? "No" : "Yes"));
       g_templates.push_back(t);
     }
   }
