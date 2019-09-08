@@ -60,6 +60,7 @@ class ClosedCaption {
 
     int curr_story_idx;
     int font_size;
+    bool is_enabled;
 
     // Index: content -> ID
     void LoadIndex(std::string filename) {
@@ -157,9 +158,11 @@ class ClosedCaption {
       millis2word.clear();
     }
 
-    void ToggleVisibility();
+    void Hover();
 
     void ToggleIsDebug() { is_debug = !is_debug; }
+
+    void ToggleIsEnabled() { is_enabled = !is_enabled; }
 
     bool IsDebug() { return is_debug; }
 

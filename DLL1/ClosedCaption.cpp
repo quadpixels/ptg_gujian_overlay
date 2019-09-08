@@ -90,10 +90,10 @@ void DrawBorderedRectangle(int x, int y, int w, int h, D3DCOLOR bkcolor, D3DCOLO
   // 画背景
   CustomVertex quad_bk[] =
   {
-    { int(x),     int(y),   Z, 1.0f, bkcolor, },
-    { int(x + w), int(y),   Z, 1.0f, bkcolor, },
-    { int(x),     int(y + h), Z, 1.0f, bkcolor, },
-    { int(x + w), int(y + h), Z, 1.0f, bkcolor, },
+    { float(x),     float(y),   Z, 1.0f, bkcolor, },
+    { float(x + w), float(y),   Z, 1.0f, bkcolor, },
+    { float(x),     float(y + h), Z, 1.0f, bkcolor, },
+    { float(x + w), float(y + h), Z, 1.0f, bkcolor, },
   };
 
   g_vert_buf->Lock(0, 0, (void**)(&pVoid), 0);
@@ -129,17 +129,17 @@ void DrawBorderedRectangle(int x, int y, int w, int h, D3DCOLOR bkcolor, D3DCOLO
   // 画线
   CustomVertex quad[] =
   {
-    { x,   y,   Z, 1.0f, bordercolor, },
-    { x + w, y,   Z, 1.0f, bordercolor, },
+    { float(x),    float(y),   Z, 1.0f, bordercolor, },
+    { float(x + w), float(y),   Z, 1.0f, bordercolor, },
 
-    { x + w, y,   Z, 1.0f, bordercolor, },
-    { x + w, y + h, Z, 1.0f, bordercolor, },
+    { float(x + w), float(y),   Z, 1.0f, bordercolor, },
+    { float(x + w), float(y + h), Z, 1.0f, bordercolor, },
 
-    { x + w, y + h, Z, 1.0f, bordercolor, },
-    { x,   y + h, Z, 1.0f, bordercolor, },
+    { float(x + w), float(y + h), Z, 1.0f, bordercolor, },
+    { float(x),   float(y + h), Z, 1.0f, bordercolor, },
 
-    { x,   y + h, Z, 1.0f, bordercolor, },
-    { x,   y,   Z, 1.0f, bordercolor, },
+    { float(x),   float(y + h), Z, 1.0f, bordercolor, },
+    { float(x),   float(y),   Z, 1.0f, bordercolor, },
   };
 
   g_vert_buf->Lock(0, 0, (void**)(&pVoid), 0);
@@ -154,7 +154,7 @@ void DrawBorderedRectangle(int x, int y, int w, int h, D3DCOLOR bkcolor, D3DCOLO
 std::vector<std::string> MySplitString(const std::string line, const char sep) {
   std::vector<std::string> sp;
   std::string x;
-  for (int i = 0; i < line.size(); i++) {
+  for (int i = 0; i < int(line.size()); i++) {
     if (line[i] == sep) {
       sp.push_back(x); x = "";
     }
@@ -171,7 +171,7 @@ std::string MyGetLineFromMemory(const char* buf, int* idx, size_t buf_len) {
   while (true) {
     if (*idx >= int(buf_len)) break;
     bool has_new_line = false;
-    while ((*idx) < buf_len && buf[(*idx)] == '\n' || buf[(*idx)] == '\r') {
+    while ((*idx) < int(buf_len) && buf[(*idx)] == '\n' || buf[(*idx)] == '\r') {
       has_new_line = true;
       (*idx)++;
     }
@@ -209,6 +209,7 @@ ClosedCaption::ClosedCaption() {
   y = 29;
 
   is_debug = false;
+  is_enabled = true;
 
   LoadDummy(nullptr);
 }
@@ -219,11 +220,24 @@ int ClosedCaption::GuessNextAudioID(int id) {
   else return *itr;
 }
 
+std::wstring g_colon = L"";
+std::wstring GetFullWidthColon() {
+  if (g_colon.size() < 1) {
+    int len = MultiByteToWideChar(CP_UTF8, 0, "：", -1, NULL, NULL);
+    wchar_t* wcolon = new wchar_t[len]; // Hopefully this will be enough!
+    MultiByteToWideChar(CP_UTF8, 0, "：", -1, wcolon, len);
+    g_colon = std::wstring(wcolon);
+    delete wcolon;
+  }
+  return g_colon;
+}
+
 std::wstring ClosedCaption::GetCurrLine() {
   const long long curr_millis = MillisecondsNow();
   float elapsed = (curr_millis - start_millis) / 1000.0f;
   std::wstring ret = speaker;
-  if (ret.size() > 0) ret += L"：";
+  if (ret.size() > 0) ret += GetFullWidthColon();
+
   for (std::map<std::pair<float, float>, std::wstring>::iterator itr =
     millis2word.begin(); itr != millis2word.end(); itr++) {
     if (itr->first.first < elapsed)
@@ -235,7 +249,8 @@ std::wstring ClosedCaption::GetCurrLine() {
 
 std::wstring ClosedCaption::GetFullLine() {
   std::wstring ret = speaker;
-  if (ret.size() > 0) ret += L"：";
+  if (ret.size() > 0) ret += GetFullWidthColon();
+
   for (std::map<std::pair<float, float>, std::wstring>::iterator itr =
     millis2word.begin(); itr != millis2word.end(); itr++) {
     ret += itr->second;
@@ -264,7 +279,7 @@ void ClosedCaption::ComputeBoundingBoxPerChar() {
 
     int HEADER_LEN = int(g_header1.size());
     
-    for (int j = HEADER_LEN; j < wcslen(msg); j++) {
+    for (unsigned j = HEADER_LEN; j < wcslen(msg); j++) {
       g_font->DrawTextW(0, msg, j + 1, &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
       const int curr_x = rect.right;
       RECT char_rect = { last_x, rect.top, curr_x, rect.bottom };
@@ -293,7 +308,7 @@ std::vector<std::wstring> ClosedCaption::GetVisualLines(bool is_full) {
   for (int i = 0; i<int(x.size()); i++) {
     RECT rect;
     g_font->DrawTextW(NULL, currline.c_str(), int(currline.size()), &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
-    const float w = rect.right - rect.left;
+    const float w = float(rect.right - rect.left);
 
     if ((last_w <= line_width && w > line_width)) {
       ret.push_back(currline);
@@ -339,6 +354,9 @@ void ClosedCaption::do_DrawBorder(int x, int y, int w, int h) {
 }
 
 void ClosedCaption::Update() {
+
+  if (!is_enabled) return;
+
   const long long millis = MillisecondsNow();
   const bool dialogbox_maybe_gone = IsDialogBoxMaybeGone();
 
@@ -417,9 +435,9 @@ void ClosedCaption::Update() {
 }
 
 void ClosedCaption::Draw() {
-
   long long millis = MillisecondsNow();
-  
+
+  if (!is_enabled) return;
   if (IsVisible() == false) return;
 
   // 保存先前的渲染状态
@@ -453,7 +471,7 @@ void ClosedCaption::Draw() {
   const int CHAR_PER_SEC = 20; // 是否渐出
   int offset = 0;
 
-  for (int i = 0; i < s.size(); i++) {
+  for (unsigned i = 0; i < s.size(); i++) {
     rect.left = x;
     rect.top = y+PADDING_TOP + i * (1 + int(FONT_SIZE * g_ui_scale_factor) );
 
@@ -609,8 +627,8 @@ void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
   int len = MultiByteToWideChar(CP_UTF8, 0, content1.c_str(), -1, NULL, NULL);
   int len_who = MultiByteToWideChar(CP_UTF8, 0, who1.c_str(), -1, NULL, NULL);
 
-  wchar_t* wcontent = new wchar_t[len]; // Hopefully this will be enough!
-  wchar_t* wwho = new wchar_t[len_who];
+  wchar_t* wcontent = new wchar_t[len + 1]; // Hopefully this will be enough!
+  wchar_t* wwho = new wchar_t[len_who + 1];
   MultiByteToWideChar(CP_UTF8, 0, content1.c_str(), -1, wcontent, len);
   MultiByteToWideChar(CP_UTF8, 0, who1.c_str(), -1, wwho, len_who);
 
@@ -678,7 +696,7 @@ int ClosedCaption::SetAlignmentFileByAudioID(int id) {
     std::string line;
     int idx = 0;
     while (idx <= int(sz)) {
-      if (idx < sz && buf[idx] != '\n') {
+      if (idx < int(sz) && buf[idx] != '\n') {
         line.push_back(buf[idx]);
       }
       else if ((idx == int(sz)) || (idx < int(sz) && buf[idx] == '\n')) {
@@ -760,7 +778,7 @@ void ClosedCaption::do_FindKeywordsForHighlighting(std::wstring s) {
       size_t occ = s.find(kw, offset);
       if (occ != std::string::npos) {
         next_pnl_ranges.insert(std::make_pair(int(occ), int(kw.size())));
-        for (int j = occ; j < occ + int(kw.size()); j++) {
+        for (unsigned j = occ; j < occ + int(kw.size()); j++) {
           pnl_mask[j] = true;
         }
         offset = occ + 1;
@@ -813,7 +831,6 @@ void ClosedCaption::LoadSeqDlgIndexFromMemory(void* ptr, int len) {
       num_ety++;
     }
   }
-  printf("[LoadIndexFromMemory] |all_story_ids|=%lu\n", all_story_ids.size());
 }
 
 // CSV分隔，[ID, Char_CHS, CHS, Char_ENG, ENG_Rev]
@@ -921,7 +938,6 @@ void ClosedCaption::LoadProperNamesList(const char* fn) {
 void ClosedCaption::LoadProperNamesListFromMemory(const char* ptr, int len) {
   int idx = 0, num_entries = 0;
   while (idx < len) {
-    int term;
     std::string x;
 
     // Get Line
@@ -1055,7 +1071,7 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
   last_highlight_idx = ch_idx;
 }
 
-void ClosedCaption::ToggleVisibility() {
+void ClosedCaption::Hover() {
   is_hovered = true;
 }
 
@@ -1067,8 +1083,6 @@ void ClosedCaption::AutoPosition(int win_w, int win_h) {
   int x = win_w / 2 - line_width / 2;
   this->x = x;
   this->y = y;
-  printf("[ClosedCaption::AutoPosition] rect=(%d,%d,%d,%d), pos=(%d,%d)\n",
-    r.left, r.top, r.right, r.bottom, x, y);
 }
 
 void ClosedCaption::FadeIn() {
@@ -1190,7 +1204,7 @@ void MyMessageBox::Draw(D3DCOLOR bkcolor, D3DCOLOR bordercolor, D3DCOLOR fontcol
     case 1: case 2: case 3: dx -= h; break; // Horizontally aligned to right
   }
   DrawBorderedRectangle(dx, dy, w, h, bkcolor, bordercolor);
-  for (int i = 0; i < lines.size(); i++) {
+  for (unsigned i = 0; i < lines.size(); i++) {
     std::wstring& line = lines[i];
     RECT rect;
     g_font->DrawTextW(NULL, line.c_str(), wcslen(line.c_str()), &rect, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
@@ -1229,7 +1243,7 @@ void VideoSubtitles::Draw() {
 }
 
 void VideoSubtitles::Start() {
-  start_millis = MillisecondsNow();
+  start_millis = long(MillisecondsNow());
   state = SUBTITLES_PLAYING;
   do_SetIdx(0);
 }
@@ -1272,7 +1286,7 @@ void VideoSubtitles::do_SetIdx(int idx) {
   if (messagebox == nullptr) {
     messagebox = new MyMessageBox();
   }
-  messagebox->SetText(txt, 800 * g_ui_scale_factor);
+  messagebox->SetText(txt, int(800 * g_ui_scale_factor));
   messagebox->w = int(800 * g_ui_scale_factor);
   messagebox->h = int(64 * g_ui_scale_factor);
   messagebox->x = int(g_win_w / 2 - messagebox->w / 2);
@@ -1288,7 +1302,6 @@ void VideoSubtitles::LoadFromMemory(const char* ptr, int len) {
 
   int idx = 0, num_entries = 0;
   while (idx < len) {
-    int term;
     std::string x;
 
     // Get Line
@@ -1322,13 +1335,13 @@ void VideoSubtitles::LoadFromMemory(const char* ptr, int len) {
 }
 
 std::wstring VideoSubtitles::GetCurrString() {
-  if (curr_idx < 0 || curr_idx >= subtitles.size()) return L"";
+  if (curr_idx < 0 || curr_idx >= int(subtitles.size())) return L"";
   else return subtitles[curr_idx];
 }
 
 float VideoSubtitles::GetCurrOpacity() {
   const int FADE_MILLIS = 300;
-  int elapsed = MillisecondsNow() - start_millis;
+  long elapsed = long(MillisecondsNow() - start_millis);
   if (curr_idx >= 0 && curr_idx < int(millisecs.size())) {
     int dist_begin = elapsed - millisecs[curr_idx];
     int dist_end = (curr_idx < int(millisecs.size() - 1)) ? millisecs[curr_idx + 1] - elapsed : 1000000007;
