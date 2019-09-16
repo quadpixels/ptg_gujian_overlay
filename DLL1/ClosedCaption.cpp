@@ -23,6 +23,7 @@ extern mz_zip_archive g_archive_dialog_aligned;
 extern RECT g_curr_dialogbox_rect; // Detect.cpp
 extern float g_ui_scale_factor;
 extern int g_win_w, g_win_h;
+extern bool g_dialog_box_gone;
 
 std::wstring g_header1 = L"";
 
@@ -365,7 +366,7 @@ void ClosedCaption::Update() {
     float elapsed = (millis - start_millis) / 1000.0f;
     if (millis2word.size() > 0 && elapsed > millis2word.rbegin()->first.second) {
       caption_state = CAPTION_PLAY_ENDED;
-      printf("[Update] CAPTION_PLAY_ENDED\n");
+      dialog_box_gone_when_fadingout = g_dialog_box_gone;
     }
   }
   else if (caption_state == CAPTION_PLAY_ENDED) { // AUTO HIDE!
@@ -380,13 +381,7 @@ void ClosedCaption::Update() {
       if (curr_story_idx == 100247) {
         ShowVideoSubtitles("credits");
       }
-
-      {
-        opacity_start = opacity;
-        fade_end_millis = millis + FADE_OUT_MILLIS;
-        fade_duration = FADE_OUT_MILLIS;
-        opacity_end = 0.0f;
-      }
+      FadeOut();
     }
   }
   else if (caption_state == CAPTION_PLAYING_NO_TIMELINE) {
@@ -396,13 +391,9 @@ void ClosedCaption::Update() {
     else {
       const long AUTO_HIDE_TIMEOUT_MILLIS = 1000; // msec
       if (millis - g_last_dialogbox_present_millis > AUTO_HIDE_TIMEOUT_MILLIS) {
+        dialog_box_gone_when_fadingout = g_dialog_box_gone;
         caption_state = CAPTION_NOT_PLAYING;
-        {
-          opacity_start = opacity;
-          fade_end_millis = millis + FADE_OUT_MILLIS;
-          fade_duration = FADE_OUT_MILLIS;
-          opacity_end = 0.0f;
-        }
+        FadeOut();
       }
     }
   }
@@ -448,6 +439,18 @@ void ClosedCaption::Draw() {
 
   std::vector<std::wstring> s = GetVisualLines(true);
   std::vector<std::wstring> c = GetVisualLines(false);
+
+  // PLAY_ENDED
+  const int NO_FADE_OUT_DURATION = 550; // Should be a bit longer than gone-ness detection interval
+  bool maybe_gone = IsDialogBoxMaybeGone() && (!is_hovered) && (millis - start_millis > NO_FADE_OUT_DURATION) &&
+    (caption_state != CAPTION_PLAYING_NO_TIMELINE);
+  if (
+    (caption_state == CAPTION_PLAY_ENDED) ||
+    (caption_state == CAPTION_NOT_PLAYING)
+    ) {
+    maybe_gone = dialog_box_gone_when_fadingout;
+  }
+  if (maybe_gone && caption_state == CAPTION_PLAYING) start_millis = 0; // Reveals all
   
   const float o = GetOpacity();
 
@@ -455,9 +458,9 @@ void ClosedCaption::Draw() {
   {
     D3DCOLOR bkcolor = D3DCOLOR_ARGB(int(128 * o), 102, 52, 35), bordercolor = D3DCOLOR_ARGB(int(40 * o), 255, 255, 255);
     if (is_dragging && is_hovered) {
-      bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 32, 32);
+      bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 255, 192);
     } else if (is_hovered) {
-      bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 255, 0);
+      bordercolor = D3DCOLOR_ARGB(int(255 * o), 192, 192, 192);
     }
 
     std::wstring probe = g_header1 + L"--";
@@ -483,7 +486,9 @@ void ClosedCaption::Draw() {
 
     // Draw full text
     msg = g_header1 + s[i];
-    D3DCOLOR color = D3DCOLOR_ARGB(int(224 * o), 192, 192, 192);
+    D3DCOLOR color;
+    if (maybe_gone) color = D3DCOLOR_ARGB(int(160 * o), 192, 192, 192);
+    else color = D3DCOLOR_ARGB(int(224 * o), 192, 192, 192);
     // Only draw on line[0]
     g_font->DrawTextW(0, msg.c_str(), msg.size(), &rect, DT_NOCLIP, color);
 
@@ -496,10 +501,12 @@ void ClosedCaption::Draw() {
       RECT rect_backup = rect;
       rect.left += (rect_header.right - rect_header.left);
       color = D3DCOLOR_ARGB(int(255 * o), 255, 255, 255);
-      g_font->DrawTextW(0, msg.c_str(), msg.size(), &rect, DT_NOCLIP, color);
+      if (!maybe_gone) {
+        g_font->DrawTextW(0, msg.c_str(), msg.size(), &rect, DT_NOCLIP, color);
 
-      // Draw proper nouns that are not highlighted (Very similar to above)
-      do_DrawHighlightedProperNouns(rect_header, rect_backup, offset, c[i], D3DCOLOR_ARGB(int(255 * o), 255, 255, 192));
+        // Draw proper nouns that are not highlighted (Very similar to above)
+        do_DrawHighlightedProperNouns(rect_header, rect_backup, offset, c[i], D3DCOLOR_ARGB(int(255 * o), 255, 255, 192));
+      }
     }
     offset += int(s[i].size());
   }
@@ -543,6 +550,9 @@ std::wstring RemoveEscapeSequence(const std::wstring& x) {
 }
 
 void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
+
+  g_dialog_box_gone = dialog_box_gone_when_fadingout = false;
+
   // Fade in
   {
     long long millis = MillisecondsNow();
@@ -1067,12 +1077,18 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
   }
 
   is_hovered = IsMouseHover(mx, my);
+  if (is_hovered) Hover();
 
   last_highlight_idx = ch_idx;
 }
 
 void ClosedCaption::Hover() {
   is_hovered = true;
+  g_dialog_box_gone = false;
+  dialog_box_gone_when_fadingout = false;
+
+  opacity_start = opacity_end = opacity = 1.0f;
+  fade_end_millis = MillisecondsNow();
 }
 
 void ClosedCaption::AutoPosition(int win_w, int win_h) {
@@ -1100,7 +1116,7 @@ void ClosedCaption::FadeOut() {
   if (opacity <= 0.0f) return;
   long long millis = MillisecondsNow();
   if (millis < fade_end_millis && opacity_end == 0.0f) return;
-  printf("[FadeOut] %g\n", opacity);
+
   opacity_start = opacity;
   fade_end_millis = millis + FADE_OUT_MILLIS;
   fade_duration = FADE_OUT_MILLIS;

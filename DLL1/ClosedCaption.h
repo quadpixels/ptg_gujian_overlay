@@ -40,6 +40,7 @@ class ClosedCaption {
   public:
 
     static std::string alignment_path;
+    bool dialog_box_gone_when_fadingout;
 
     enum CaptionPlaybackState {
       CAPTION_NOT_PLAYING,
@@ -47,6 +48,10 @@ class ClosedCaption {
       CAPTION_PLAYING,
       CAPTION_PLAY_ENDED
     };
+
+    // This flag is activated when the edge detector thinks the dialog box has disappeared when 
+    // caption is in PLAYING state
+    bool is_caption_playing_maybe_gone;
 
     ClosedCaption();
     static int PADDING_LEFT, PADDING_TOP, MOUSE_Y_DELTA;
@@ -187,6 +192,8 @@ class ClosedCaption {
 
     void FadeOut();
 
+    float GetOpacity() { return opacity; }
+
   private:
 
     std::map<std::pair<std::string, std::string>, std::set<int> > index; // (who, content) -> Index
@@ -217,11 +224,6 @@ class ClosedCaption {
 
     int GetVisibleWidth() { return this->line_width; }
     int GetVisibleHeight() { return this->visible_height; }
-
-    float GetOpacity() {
-      if (is_hovered) return 1.0f;
-      else return opacity;
-    }
 
     RECT FindBbByCharIdx(int idx) {
       RECT ret = { 0 };

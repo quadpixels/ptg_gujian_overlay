@@ -38,12 +38,14 @@ extern DWORD WINAPI PnlHighlightThdStart(LPVOID lpParam);
 // TODO: Detect whether dialog box exists
 // TODO: greyscale ??
 
+extern int g_win_w, g_win_h;
+
 // Gather metric statistics for offline study
 struct MyHistogram {
   std::list<float> measurements;
   std::string name;
   int dump_offset;
-  const int SAVE_INTERVAL = 100;
+  const int SAVE_INTERVAL = 30; // 15s
   MyHistogram(std::string _name) {
     dump_offset = 0;
     name = _name;
@@ -56,7 +58,8 @@ struct MyHistogram {
   }
   void DumpToFile() {
     char tmp[255];
-    sprintf_s(tmp, "C:\\temp\\%s.txt", name.c_str());
+    // Resolution-sensitive, so keep the resolution as well
+    sprintf_s(tmp, "C:\\temp\\%s_%dx%d.txt", name.c_str(), g_win_w, g_win_h);
     FILE* f;
     errno_t e = fopen_s(&f, tmp, "a");
     if (e != 0) return;
@@ -170,7 +173,7 @@ void DetermineUIScaleFactor(const int w, const int h) {
   if (g_ui_scale_factor != g_ui_scale_prev) {
     printf("[DetermineUIScaleFactor] %d x %d, scale_factor=%g\n", w, h, g_ui_scale_factor);
     g_ui_scale_prev = g_ui_scale_factor;
-    InitFont(&g_font, FONT_SIZE * g_ui_scale_factor);
+    InitFont(&g_font, int(FONT_SIZE * g_ui_scale_factor));
   }
 
   // Determine location of dialog box
@@ -293,6 +296,7 @@ void DoDetect(unsigned char* chr, const int len) {
   cv::Mat tmp_orig = cv::imdecode(raw_data_mat, cv::IMREAD_COLOR);
   raw_data_mat.release();
 
+  int sc_outer = 0, sc_inner = 0;
   // Update dialog box presence
   {
     // Generate canny and return
@@ -300,7 +304,6 @@ void DoDetect(unsigned char* chr, const int len) {
     cv::Canny(tmp_orig, canny_orig, g_canny_thresh1, g_canny_thresh2);
     
 
-    int sc_outer = 0, sc_inner = 0;
     int R = 5; // probe radius
     const int x0 = g_curr_dialogbox_rect.left, y0 = g_curr_dialogbox_rect.top,
       x1 = g_curr_dialogbox_rect.right, y1 = g_curr_dialogbox_rect.bottom;
@@ -375,7 +378,7 @@ void DoDetect(unsigned char* chr, const int len) {
   }
 
   this_frame_match_count.resize(N);
-  for (int i = 0; i < this_frame_match_count.size(); i++) this_frame_match_count[i] = 0;
+  for (int i = 0; i < int(this_frame_match_count.size()); i++) this_frame_match_count[i] = 0;
 
   for (int x = 0; x < N; x++) {
     cv::TemplateMatchModes mode = cv::TM_CCOEFF_NORMED;
@@ -426,6 +429,7 @@ void DoDetect(unsigned char* chr, const int len) {
 
     // Cache or not cache?
     bool in_cache = (g_match_cache.find(g_templates[i]) != g_match_cache.end());
+    if (g_ClosedCaption.IsDebug()) in_cache = false; // Force check all in this case
     cv::Point min_loc, max_loc;
     double min_val, max_val;
 
@@ -486,7 +490,7 @@ void DoDetect(unsigned char* chr, const int len) {
     // Record metric if histogram struct exists
     if (g_ClosedCaption.IsDebug()) {
       if (g_templates[i]->histogram != nullptr) {
-        g_templates[i]->histogram->AddMeasurement(metric);
+        g_templates[i]->histogram->AddMeasurement(float(metric));
       }
     }
 
@@ -531,10 +535,10 @@ void DoDetect(unsigned char* chr, const int len) {
       this_frame_match_count[i]++;
 
       RECT r_scaled, r_orig;
-      r_orig.left = ans.x / scale * g_ui_scale_factor;
-      r_orig.top = ans.y / scale * g_ui_scale_factor;
-      r_orig.right = r_orig.left + (m.cols / scale * g_ui_scale_factor);
-      r_orig.bottom = r_orig.top + (m.rows / scale * g_ui_scale_factor);
+      r_orig.left = long(ans.x / scale * g_ui_scale_factor);
+      r_orig.top = long(ans.y / scale * g_ui_scale_factor);
+      r_orig.right = r_orig.left + long(m.cols / scale * g_ui_scale_factor);
+      r_orig.bottom = r_orig.top + long(m.rows / scale * g_ui_scale_factor);
 
       r_scaled.left = ans.x;
       r_scaled.top = ans.y;
@@ -577,7 +581,11 @@ void DoDetect(unsigned char* chr, const int len) {
   highlight_rects = next_rect;
   LeaveCriticalSection(&g_critsect_rectlist);
 
-  g_dbg_messagebox->SetText(dbg_string, 800*g_ui_scale_factor);
+  dbg_string = dbg_string + L"Opacity=" + std::to_wstring(g_ClosedCaption.GetOpacity());
+  dbg_string += L"\n";
+  dbg_string += L"EdgeDetect Outer=" + std::to_wstring(sc_outer) + L", Inner=" + std::to_wstring(sc_inner) + L", gone=" + std::to_wstring(g_dialog_box_gone);
+
+  g_dbg_messagebox->SetText(dbg_string, int(800*g_ui_scale_factor));
   // CalcDimension should be in main thread!
 
   for (int i = 0; i < N; i++) {
@@ -698,6 +706,8 @@ void LoadImagesFromFile() // Read Image List
   while (idx > 0 && dir_name[idx] != '\\') idx--;
   dir_name = dir_name.substr(0, idx);
 
+  int entry_idx = 0;
+
   std::ifstream f(image_list);
   if (f.good()) {
     while (f.good()) {
@@ -711,7 +721,7 @@ void LoadImagesFromFile() // Read Image List
       if (line[0] == '#') continue; // Commented out
 
       std::vector<std::string> sp;
-      for (int i = 0; i < line.size(); i++) {
+      for (int i = 0; i < int(line.size()); i++) {
         if (line[i] == '\t') {
           sp.push_back(x); x = "";
         }
@@ -804,7 +814,8 @@ void LoadImagesFromFile() // Read Image List
         delete wcaption;
 
         // assign histogram if in debug mode
-        t->histogram = new MyHistogram(caption);
+        t->histogram = new MyHistogram(std::to_string(entry_idx) + "_" + caption);
+        entry_idx++;
 
         printf("Loaded template [%s] = %dx%d, resized=%dx%d, has mask: %s\n",
           file_name.c_str(), tmp.cols, tmp.rows, t->mat->cols, t->mat->rows,
@@ -818,7 +829,7 @@ void LoadImagesFromFile() // Read Image List
 void LoadImagesFromResource() {
   size_t sz;
   const char* buf = (const char*)(mz_zip_reader_extract_file_to_heap(&g_archive_match_templates, "TemplateList.txt", &sz, 0));
-  int idx = 0;
+  unsigned idx = 0, entry_idx = 0;
   while (idx < sz) {
     std::string file_name, caption;
     std::string line, x;
@@ -850,7 +861,7 @@ void LoadImagesFromResource() {
 
     // Get line
     std::vector<std::string> sp;
-    for (int i = 0; i < line.size(); i++) {
+    for (unsigned i = 0; i < line.size(); i++) {
       if (line[i] == '\t') {
         sp.push_back(x); x = "";
       }
@@ -957,7 +968,8 @@ void LoadImagesFromResource() {
       delete wcaption;
 
       // assign histogram if in debug mode
-      t->histogram = new MyHistogram(caption);
+      t->histogram = new MyHistogram(std::to_string(entry_idx) + "_" + caption);
+      entry_idx++;
 
       g_templates.push_back(t);
     }
