@@ -36,6 +36,18 @@ CRITICAL_SECTION g_pnl_workq_critsect, g_pnl_mask_critsect;
 
 extern void ShowVideoSubtitles(const std::string& tag);
 
+// If we don't use this function, non-English text will be garbled on an English Windows 10
+//   with "default non-English locale" set to English
+std::wstring ToWstring(std::string s) {
+  std::wstring ret;
+  int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, NULL, NULL);
+  wchar_t* w = new wchar_t[len]; // Hopefully this will be enough!
+  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w, len);
+  ret = std::wstring(w);
+  delete w;
+  return ret;
+}
+
 DWORD WINAPI PnlHighlightThdStart(LPVOID lpParam) {
   ClosedCaption* cc = (ClosedCaption*)lpParam;
   while (true) {
@@ -391,7 +403,7 @@ void ClosedCaption::Update() {
     else {
       const long AUTO_HIDE_TIMEOUT_MILLIS = 1000; // msec
       if (millis - g_last_dialogbox_present_millis > AUTO_HIDE_TIMEOUT_MILLIS) {
-        dialog_box_gone_when_fadingout = g_dialog_box_gone;
+        dialog_box_gone_when_fadingout = false; // Never dim "NO TIMELINE"
         caption_state = CAPTION_NOT_PLAYING;
         FadeOut();
       }
@@ -1051,10 +1063,10 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
         std::wstring fulltext = GetFullLine();
         std::wstring key = fulltext.substr(itr->first, itr->second);
         std::wstring desc = proper_names[key];
-        std::wstring txt = L"【" + key + L"】\n" + desc;
+        std::wstring txt = ToWstring("【") + key + ToWstring("】\n") + desc;
         
         if (popup_txt.size() > 0)
-          popup_txt += L"；";
+          popup_txt += ToWstring("；");
         popup_txt += txt;
 
       }
