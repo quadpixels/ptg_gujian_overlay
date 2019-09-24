@@ -41,8 +41,17 @@ extern DWORD WINAPI PnlHighlightThdStart(LPVOID lpParam);
 extern int g_win_w, g_win_h;
 
 // Gather metric statistics for offline study
+template<typename T> void do_DumpOneEntry(FILE* f, T x) { }
+template<> void do_DumpOneEntry(FILE* f, float x) {
+  fprintf(f, "%g\n", x);
+}
+template<> void do_DumpOneEntry(FILE* f, std::pair<float, float> x) {
+  fprintf(f, "%g %g\n", x.first, x.second);
+}
+
+template<typename T>
 struct MyHistogram {
-  std::list<float> measurements;
+  std::list<T> measurements;
   std::string name;
   int dump_offset;
   const int SAVE_INTERVAL = 30; // 15s
@@ -50,7 +59,7 @@ struct MyHistogram {
     dump_offset = 0;
     name = _name;
   }
-  void AddMeasurement(float x) {
+  void AddMeasurement(T x) {
     measurements.push_back(x);
     if ((measurements.size() % SAVE_INTERVAL) == (SAVE_INTERVAL - 1)) {
       DumpToFile();
@@ -64,9 +73,9 @@ struct MyHistogram {
     errno_t e = fopen_s(&f, tmp, "a");
     if (e != 0) return;
     int idx = 0;
-    for (float m : measurements) {
+    for (T m : measurements) {
       if (idx >= dump_offset) {
-        fprintf(f, "%g\n", m);
+        do_DumpOneEntry<T>(f, m);
       }
       idx++;
     }
@@ -97,7 +106,7 @@ struct MatchTemplate {
   // 动态属性
   int last_frame_match_count;
 
-  MyHistogram* histogram;
+  MyHistogram<float>* histogram;
 
   MatchTemplate() {
     histogram = nullptr;
@@ -131,8 +140,14 @@ DWORD  g_detector_thd_id;
 volatile bool g_detector_done = false;
 volatile bool g_detector_sleeping = true;
 DWORD WINAPI MyThreadFunction(LPVOID lpParam);
+#ifndef USE_DETECT_PATH_2
 void DoDetect(unsigned char* chr, const int len);
 void DoCheckMatchesDisappear(unsigned char* chr, const int len);
+#else
+void DoDetect(D3DLOCKED_RECT* locked_rect);
+void DoCheckMatchesDisappear(D3DLOCKED_RECT* locked_rect);
+#endif
+
 float g_ui_scale_factor = 1.0f, g_ui_scale_prev = 1.0f;
 int g_last_w = 0, g_last_h = 0;
 
@@ -143,7 +158,17 @@ bool g_use_canny = false;
 bool g_canny_set_scale_1 = false;
 float g_canny_thresh1 = 100.0f, g_canny_thresh2 = 200.0f;
 cv::Size g_boxfilter_size = cv::Size(4, 4);
+
 int g_last_scene_id = -999;
+
+MyHistogram<std::pair<float, float> >* g_edgedetect_hist;
+
+void SetLastSceneId(int x) {
+  g_last_scene_id = x;
+  if (g_last_scene_id == 2) { // In-game menu
+    g_ClosedCaption.FadeOut();
+  }
+}
 
 bool g_dialog_box_gone = false;
 std::map<std::pair<int, int>, RECT > DIALOG_BOX_COORDS =
@@ -226,10 +251,15 @@ void ClearHighlightRects() {
   LeaveCriticalSection(&g_critsect_rectlist);
 }
 
+#ifndef USE_DETECT_PATH_2
 unsigned char* g_img_data;
 int g_img_len;
+#else
+D3DLOCKED_RECT g_locked_rect;
+#endif
 int g_detector_mode; // 1: detect, 2: remove existing
 
+#ifndef USE_DETECT_PATH_2
 void WakeDetectorThread(unsigned char* ch, const int len, const int mode) {
   g_img_data = ch;
   g_img_len = len;
@@ -239,6 +269,17 @@ void WakeDetectorThread(unsigned char* ch, const int len, const int mode) {
 
   g_detector_sleeping = false;
 }
+#else
+void WakeDetectorThread(D3DLOCKED_RECT* rect, const int mode)
+{
+  g_locked_rect = *rect;
+  g_detector_mode = mode;
+
+  MemoryBarrier();
+
+  g_detector_sleeping = false;
+}
+#endif
 
 DWORD WINAPI MyThreadFunction(LPVOID lpParam) {
   
@@ -251,10 +292,18 @@ DWORD WINAPI MyThreadFunction(LPVOID lpParam) {
 
     switch (g_detector_mode) {
     case 1:
+#ifndef USE_DETECT_PATH_2
       DoDetect(g_img_data, g_img_len);
+#else
+      DoDetect(&g_locked_rect);
+#endif
       break;
     case 2:
+#ifndef USE_DETECT_PATH_2
       DoCheckMatchesDisappear(g_img_data, g_img_len);
+#else
+      DoCheckMatchesDisappear(&g_locked_rect);
+#endif
       break;
     }
 
@@ -281,29 +330,72 @@ bool IsDialogBoxMaybeGone() {
   return g_dialog_box_gone;
 }
 
+int RoundUpToPowerOf2(int x) {
+  int ret = 1;
+  while (ret < x) ret *= 2;
+  return ret;
+}
+
+// DX9's surface are always powers of two so we make some adaptations here
+cv::Mat D3D9SurfaceToCvMat(D3DLOCKED_RECT* locked_rect) {
+  const int h2 = RoundUpToPowerOf2(g_win_h), w2 = RoundUpToPowerOf2(g_win_w);
+  cv::Mat3b ret(g_win_h, g_win_w);
+
+  for (int y = 0; y < g_win_h; y++) {
+    for (int x = 0; x < g_win_w; x++) {
+      unsigned char *p = (unsigned char*)(locked_rect->pBits) +
+        locked_rect->Pitch * y +
+        x * 4;
+      cv::Vec3b rgb = { p[0], p[1], p[2] };
+      ret.at<cv::Vec3b>(y, x) = rgb;
+    }
+  }
+
+  // Save image for inspection
+  if (false) {
+    std::vector<unsigned char> encoded_data;
+    cv::imencode(".png", ret, encoded_data);
+    FILE* f;
+    fopen_s(&f, "C:\\temp\\aaaaaaaaaaaaaaaaa.png", "wb");
+    fwrite(encoded_data.data(), 1, encoded_data.size(), f);
+    fclose(f);
+  }
+
+  return ret;
+}
+
 // About half second using debug library
-void DoDetect(unsigned char* chr, const int len) {
+
+#ifndef USE_DETECT_PATH_2
+void DoDetect(unsigned char* chr, const int len)
+#else
+void DoDetect(D3DLOCKED_RECT* locked_rect)
+#endif
+{
   const int N = int(g_templates.size()); // This can help avoid data race!
   std::vector<int> this_frame_match_count;
   std::wstring dbg_string = L"";
   const bool VERBOSE = true;
 
   std::vector<struct MatchResult> next_rect;
-  //printf(">>> [DoDetect]\n");
-  //g_surface_mat = cv::Mat(w, h, CV_8UC4, ch).t();
+  
 
+#ifndef USE_DETECT_PATH_2
   cv::Mat raw_data_mat(1, len, CV_8UC1, chr);
   cv::Mat tmp_orig = cv::imdecode(raw_data_mat, cv::IMREAD_COLOR);
   raw_data_mat.release();
+#else
+  cv::Mat tmp_orig = D3D9SurfaceToCvMat(locked_rect);
+#endif
 
   int sc_outer = 0, sc_inner = 0;
   // Update dialog box presence
   {
     // Generate canny and return
     cv::Mat canny_orig;
+
     cv::Canny(tmp_orig, canny_orig, g_canny_thresh1, g_canny_thresh2);
     
-
     int R = 5; // probe radius
     const int x0 = g_curr_dialogbox_rect.left, y0 = g_curr_dialogbox_rect.top,
       x1 = g_curr_dialogbox_rect.right, y1 = g_curr_dialogbox_rect.bottom;
@@ -335,7 +427,12 @@ void DoDetect(unsigned char* chr, const int len) {
       }
     }
 
-    //printf("sc_outer=%d sc_inner=%d\n", sc_outer, sc_inner);
+    if (g_ClosedCaption.IsDebug()) {
+      if (g_edgedetect_hist == nullptr) {
+        g_edgedetect_hist = new MyHistogram<std::pair<float, float> >("edgedetect_outer_inner");
+      }
+      g_edgedetect_hist->AddMeasurement(std::make_pair(sc_outer, sc_inner));
+    }
 
     if (sc_outer > 1.25 * sc_inner) {
       g_dialog_box_gone = false;
@@ -565,7 +662,8 @@ void DoDetect(unsigned char* chr, const int len) {
       g_match_cache.erase(g_templates[i]);
     }
   }
-  g_last_scene_id = curr_scene;
+
+  SetLastSceneId(curr_scene);
 
   tmp_orig.release();
 
@@ -583,7 +681,10 @@ void DoDetect(unsigned char* chr, const int len) {
 
   dbg_string = dbg_string + L"Opacity=" + std::to_wstring(g_ClosedCaption.GetOpacity());
   dbg_string += L"\n";
-  dbg_string += L"EdgeDetect Outer=" + std::to_wstring(sc_outer) + L", Inner=" + std::to_wstring(sc_inner) + L", gone=" + std::to_wstring(g_dialog_box_gone);
+  dbg_string += L"EdgeDetect Outer=" + std::to_wstring(sc_outer);
+  dbg_string += L", Inner=" + std::to_wstring(sc_inner);
+  dbg_string += L", gone=" + std::to_wstring(g_dialog_box_gone);
+  dbg_string += L", sceneid=" + std::to_wstring(g_last_scene_id);
 
   g_dbg_messagebox->SetText(dbg_string, int(800*g_ui_scale_factor));
   // CalcDimension should be in main thread!
@@ -593,10 +694,20 @@ void DoDetect(unsigned char* chr, const int len) {
   }
 }
 
-void DoCheckMatchesDisappear(unsigned char* chr, const int len) {
+#ifndef USE_DETECT_PATH_2
+void DoCheckMatchesDisappear(unsigned char* chr, const int len) 
+#else
+void DoCheckMatchesDisappear(D3DLOCKED_RECT* locked_rect)
+#endif
+{
+
+#ifndef USE_DETECT_PATH_2
   cv::Mat raw_data_mat(1, len, CV_8UC1, chr);
   cv::Mat tmp = cv::imdecode(raw_data_mat, cv::IMREAD_COLOR);
   raw_data_mat.release();
+#else
+  cv::Mat tmp = D3D9SurfaceToCvMat(locked_rect);
+#endif
   assert(tmp.type() == CV_8UC3);
   
   //                           Scale  Canny
@@ -814,7 +925,7 @@ void LoadImagesFromFile() // Read Image List
         delete wcaption;
 
         // assign histogram if in debug mode
-        t->histogram = new MyHistogram(std::to_string(entry_idx) + "_" + caption);
+        t->histogram = new MyHistogram<float>(std::to_string(entry_idx) + "_" + caption);
         entry_idx++;
 
         printf("Loaded template [%s] = %dx%d, resized=%dx%d, has mask: %s\n",
@@ -968,7 +1079,7 @@ void LoadImagesFromResource() {
       delete wcaption;
 
       // assign histogram if in debug mode
-      t->histogram = new MyHistogram(std::to_string(entry_idx) + "_" + caption);
+      t->histogram = new MyHistogram<float>(std::to_string(entry_idx) + "_" + caption);
       entry_idx++;
 
       g_templates.push_back(t);

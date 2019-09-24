@@ -4,6 +4,8 @@
 #include <cctype>
 #include <fstream>
 
+#define USE_DETECT_PATH_2
+
 struct PtgOverlayConfig {
   std::string root_path;
 
