@@ -24,6 +24,7 @@ extern RECT g_curr_dialogbox_rect; // Detect.cpp
 extern float g_ui_scale_factor;
 extern int g_win_w, g_win_h;
 extern bool g_dialog_box_gone;
+extern int g_last_scene_id;
 
 std::wstring g_header1 = L"";
 
@@ -412,7 +413,7 @@ void ClosedCaption::Update() {
 
   // Fading in/out when playback is done
   if (caption_state == CAPTION_NOT_PLAYING) {
-    if (is_hovered || is_dragging) {
+    if (is_dragging) {
       this->FadeIn();
     }
     else {
@@ -475,7 +476,7 @@ void ClosedCaption::Draw() {
       bordercolor = D3DCOLOR_ARGB(int(255 * o), 192, 192, 192);
     }
 
-    std::wstring probe = g_header1 + L"--";
+    std::wstring probe = g_header1 + L"----";
     g_font->DrawTextW(NULL, probe.c_str(), probe.size(), &rect_header, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
     const int pad_left = rect_header.right - rect_header.left;
 
@@ -1099,8 +1100,11 @@ void ClosedCaption::Hover() {
   g_dialog_box_gone = false;
   dialog_box_gone_when_fadingout = false;
 
-  opacity_start = opacity_end = opacity = 1.0f;
-  fade_end_millis = MillisecondsNow();
+  if (g_last_scene_id != 2) {// Not in menu
+    // Instant fade-in
+    opacity_start = opacity_end = opacity = 1.0f;
+    fade_end_millis = MillisecondsNow();
+  }
 }
 
 void ClosedCaption::AutoPosition(int win_w, int win_h) {
@@ -1117,7 +1121,7 @@ void ClosedCaption::FadeIn() {
   if (opacity >= 1.0f) return;
   long long millis = MillisecondsNow();
   if (millis < fade_end_millis && opacity_end == 1.0f) return;
-  printf("[FadeIn]\n");
+
   opacity_start = opacity;
   fade_end_millis = millis + FADE_IN_MILLIS;
   fade_duration = FADE_IN_MILLIS;
