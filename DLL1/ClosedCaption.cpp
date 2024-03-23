@@ -6,6 +6,7 @@
 #include "miniz.h"
 #include <assert.h>
 #include <list>
+#include <unordered_set>
 
 // in dll1.cpp
 extern std::wstring_convert<std::codecvt_utf8_utf16<wchar_t> > g_converter;
@@ -25,6 +26,8 @@ extern float g_ui_scale_factor;
 extern int g_win_w, g_win_h;
 extern bool g_dialog_box_gone;
 extern int g_last_scene_id;
+extern bool IsInGameMenu();
+extern bool g_use_detect;
 
 std::wstring g_header1 = L"";
 
@@ -47,6 +50,14 @@ std::wstring ToWstring(std::string s) {
   ret = std::wstring(w);
   delete w;
   return ret;
+}
+
+std::string ToMBString(std::wstring wstr) {
+  if (wstr.empty()) return std::string();
+  int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+  std::string strTo(size_needed, 0);
+  WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+  return strTo;
 }
 
 DWORD WINAPI PnlHighlightThdStart(LPVOID lpParam) {
@@ -180,6 +191,21 @@ std::vector<std::string> MySplitString(const std::string line, const char sep) {
   return sp;
 }
 
+std::vector<std::wstring> MySplitWstring(const std::wstring line, const wchar_t sep) {
+  std::vector<std::wstring> sp;
+  std::wstring x;
+  for (int i = 0; i < int(line.size()); i++) {
+    if (line[i] == sep) {
+      sp.push_back(x); x = L"";
+    }
+    else {
+      x.push_back(line[i]);
+    }
+  }
+  if (x.size() > 0) sp.push_back(x);
+  return sp;
+}
+
 std::string MyGetLineFromMemory(const char* buf, int* idx, size_t buf_len) {
   std::string line;
   while (true) {
@@ -261,9 +287,12 @@ std::wstring ClosedCaption::GetCurrLine() {
   return ret;
 }
 
-std::wstring ClosedCaption::GetFullLine() {
-  std::wstring ret = speaker;
-  if (ret.size() > 0) ret += GetFullWidthColon();
+std::wstring ClosedCaption::GetFullLine(bool ignore_speaker) {
+  std::wstring ret;
+  if (ignore_speaker == false) {
+    ret = speaker;
+    if (ret.size() > 0) ret += GetFullWidthColon();
+  }
 
   for (std::map<std::pair<float, float>, std::wstring>::iterator itr =
     millis2word.begin(); itr != millis2word.end(); itr++) {
@@ -387,7 +416,7 @@ void ClosedCaption::Update() {
     const float AUTO_HIDE_TIMEOUT = 2; // seconds
     if (millis2word.size() > 0 && 
       elapsed > millis2word.rbegin()->first.second + AUTO_HIDE_TIMEOUT &&
-      dialogbox_maybe_gone) {
+      (dialogbox_maybe_gone && !IsMaybeGoneSuppressed())) {
       caption_state = CAPTION_NOT_PLAYING;
       
       // Show credit screen
@@ -398,7 +427,7 @@ void ClosedCaption::Update() {
     }
   }
   else if (caption_state == CAPTION_PLAYING_NO_TIMELINE) {
-    if (!dialogbox_maybe_gone) {
+    if (g_use_detect && !dialogbox_maybe_gone) {
       g_last_dialogbox_present_millis = millis;
     }
     else {
@@ -461,20 +490,22 @@ void ClosedCaption::Draw() {
     (caption_state == CAPTION_PLAY_ENDED) ||
     (caption_state == CAPTION_NOT_PLAYING)
     ) {
-    maybe_gone = dialog_box_gone_when_fadingout;
+    if (!g_use_detect) maybe_gone = g_dialog_box_gone = true;
+    else maybe_gone = dialog_box_gone_when_fadingout;
   }
   if (maybe_gone && caption_state == CAPTION_PLAYING) start_millis = 0; // Reveals all
   
   const float o = GetOpacity();
 
   // Border?
+  D3DCOLOR bkcolor = D3DCOLOR_ARGB(int(128 * o), 102, 52, 35), bordercolor = D3DCOLOR_ARGB(int(40 * o), 255, 255, 255);
+  if (is_dragging && is_hovered) {
+    bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 255, 192);
+  }
+  else if (is_hovered) {
+    bordercolor = D3DCOLOR_ARGB(int(255 * o), 192, 192, 192);
+  }
   {
-    D3DCOLOR bkcolor = D3DCOLOR_ARGB(int(128 * o), 102, 52, 35), bordercolor = D3DCOLOR_ARGB(int(40 * o), 255, 255, 255);
-    if (is_dragging && is_hovered) {
-      bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 255, 192);
-    } else if (is_hovered) {
-      bordercolor = D3DCOLOR_ARGB(int(255 * o), 192, 192, 192);
-    }
 
     std::wstring probe = g_header1 + L"----";
     g_font->DrawTextW(NULL, probe.c_str(), probe.size(), &rect_header, DT_CALCRECT, D3DCOLOR_ARGB(255, 255, 255, 255));
@@ -536,12 +567,19 @@ void ClosedCaption::Draw() {
     }
   }
 
+  // Translation alignment
+  {
+    if (curr_a3info != nullptr && is_hovered) {
+      do_drawA3Info(&rect, true);
+    }
+  }
+
+
   if (g_hover_messagebox) g_hover_messagebox->Draw();
   if (is_debug && g_dbg_messagebox) {
     g_dbg_messagebox->CalculateDimension(); // Must be in main thread.
     g_dbg_messagebox->Draw();
   }
-
   // 恢复先前的渲染状态
   RestoreD3D9RenderState();
 }
@@ -562,7 +600,8 @@ std::wstring RemoveEscapeSequence(const std::wstring& x) {
   return ret;
 }
 
-void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
+// who_original means BEFORE $TeamLeader SUBSTITUTION
+void ClosedCaption::OnFuncTalk(const char* who_original, const char* content) {
 
   g_dialog_box_gone = dialog_box_gone_when_fadingout = false;
 
@@ -578,7 +617,7 @@ void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
 
   proper_noun_ranges.clear();
 
-  std::string who1 = who, content1 = content;
+  std::string who1 = who_original, content1 = content;
   while ((content1.size() > 0 && (content1.back() == '\n' || content1.back() == '\r'))) content1.pop_back();
   int idx = 0;
   while ((idx + 1 < int(content1.size())) && (content1[idx] == ' ')) idx++;
@@ -636,6 +675,19 @@ void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
       content_matchid = 2;
       content_mapped = true;
     }
+
+    // For $TeamLeader:
+    // $TeamLeader is replaced by App before OnFuncTalk gets called
+    if (who_mapped == false) {
+      // Hard code some TeamLeaders that might appear
+      std::map<std::string, std::string> team_leaders = {
+        { "韩云溪", "韩云溪(Han Yunxi)" }
+      };
+      if (team_leaders.find(who1) != team_leaders.end()) {
+        who1 = who1_cand = team_leaders[who1];
+        who_mapped = true;
+      }
+    }
     
     if (who_mapped && content_mapped) {
       who1 = who1_cand;
@@ -666,7 +718,7 @@ void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
 
   if (ret == -999 || ret == -998) {
     millis2word.clear();
-    millis2word[std::make_pair(0.0f, 0.0f)] = RemoveEscapeSequence(w);
+    //millis2word[std::make_pair(0.0f, 0.0f)] = RemoveEscapeSequence(w);
     printf("[ClosedCaption] alignment file not found or is not okay. length=%lu\n", w.size());
     caption_state = CAPTION_PLAYING_NO_TIMELINE;
   }
@@ -678,6 +730,15 @@ void ClosedCaption::OnFuncTalk(const char* who, const char* content) {
   // 无论找没找到对话文本、都标记关键字
   FindKeywordsForHighlighting();
   ComputeBoundingBoxPerChar();
+  
+  // Skip initial spaces for use with lookup
+  const char* ptr = content;
+  while (*ptr == ' ') ptr++;
+  std::wstring ot = ToWstring(ptr);
+  while (ot.empty() == false && (ot.back() == L'\n' || ot.back() == L'\r')) ot.pop_back();
+  SetCurrOrigText(ot);
+  FindA3Alignment(ot);
+  SuppressMaybeGone(500);
 }
 
 // The caller should also call these two functions after calling SetAlignmentFileByAudioID:
@@ -783,6 +844,41 @@ void ClosedCaption::FindKeywordsForHighlighting() {
   LeaveCriticalSection(&g_pnl_workq_critsect);
 }
 
+// This alignment works on SHOWN text which means SPEAKER NAME is included
+void ClosedCaption::MarkChsEngTranslationAlignments(A3Info* info) {
+
+  range_to_align_splits.clear();
+
+  if (info == nullptr) return;
+  std::wstring fulltext = GetFullLine();
+  std::vector<std::wstring>* target_text = &(info->target_text_split);
+  std::vector<std::pair<std::wstring, std::vector<int> > >* alignment = &(info->alignment);
+  if (!alignment) return;
+  int i0 = 0;
+  for (int i = 0; i<int(alignment->size()); i++) {
+    std::wstring term = alignment->at(i).first;
+    if (term == L"NULL") continue;
+    while (i0 <= int(fulltext.size() - term.size())) {
+      if (fulltext.substr(i0, term.size()) == term) {
+
+        range_to_align_splits[std::make_pair(i0, i0 + int(term.size() - 1))] = i;
+
+        wprintf(L"[MarkChsEngTranslationAlignments] %ls([%d],len=%d has %d occs:", 
+          term.c_str(), i0, int(term.size()),
+          int(alignment->at(i).second.size()));
+
+        for (int i : alignment->at(i).second) {
+          wprintf(L" %ls", target_text->at(i - 1).c_str());
+        }
+
+        printf("\n");
+        break;
+      }
+      i0++;
+    }
+  }
+}
+
 // Thread work-item
 void ClosedCaption::do_FindKeywordsForHighlighting(std::wstring s) {
   
@@ -856,10 +952,69 @@ void ClosedCaption::LoadSeqDlgIndexFromMemory(void* ptr, int len) {
   }
 }
 
+A3Info* GetNextEntryFromAlignmentFile(std::ifstream* f) {
+
+  std::vector<std::wstring> target_text;
+  std::vector<std::pair<std::wstring, std::vector<int> > > alignment;
+
+  // Comments - skip
+  std::string line;
+  std::wstring wline;
+  while (f->good()) {
+    std::getline(*f, line);
+    wline = ToWstring(line);
+    if (wline[0] != L'#') break;
+  }
+
+  if (!(f->good())) return nullptr;
+
+  // Target language
+  target_text = MySplitWstring(wline, L' ');
+
+  if (!(f->good())) return nullptr;
+
+  // Source language
+  std::getline(*f, line); wline = ToWstring(line);
+  std::vector<std::wstring> tokens = MySplitWstring(wline, L' ');
+  int i = 0;
+  while (i < int(tokens.size())) {
+    std::wstring term = tokens[i]; i++;
+    if (tokens[i] == L"({") {
+      i++;
+      std::vector<int> occs;
+      while (tokens[i] != L"})") {
+        int x;
+        if (1 == swscanf_s(tokens[i].c_str(), L"%d", &x)) {
+          occs.push_back(x);
+          i++;
+        }
+        else break;
+
+        if (i >= int(tokens.size())) break;
+      }
+      alignment.push_back(std::make_pair(term, occs));
+      i++;
+    }
+  }
+
+  A3Info* ret = new A3Info();
+  ret->target_text_split = target_text;
+  ret->alignment = alignment;
+  return ret;
+}
+
 // CSV分隔，[ID, Char_CHS, CHS, Char_ENG, ENG_Rev]
-void ClosedCaption::LoadEngChsParallelText(const char* fn) {
-  assert(0);
-  #if 0
+void ClosedCaption::LoadEngChsParallelText(const char* fn, const char* alignment_fn_e2c, const char* alignment_fn_c2e) {
+
+  bool use_alignment = false;
+  std::ifstream f_alignment_c2e, f_alignment_e2c;
+  if (alignment_fn_e2c != nullptr && alignment_fn_c2e != nullptr) {
+    f_alignment_e2c = std::ifstream(alignment_fn_e2c);
+    f_alignment_c2e = std::ifstream(alignment_fn_c2e);
+    if (f_alignment_e2c.good() && f_alignment_c2e.good()) use_alignment = true;
+  }
+
+
   std::ifstream f(fn);
   int num_entries = 0;
   if (f.good()) {
@@ -889,14 +1044,31 @@ void ClosedCaption::LoadEngChsParallelText(const char* fn) {
         eng2chs_who[std::make_pair(char_eng, -999)] = char_chs; // For non-sequence dialogs
         eng2chs_content[std::make_pair(eng_rev, id)] = chs;
         eng2chs_content[std::make_pair(eng_rev, -999)] = chs;
+        
+        // wchar_t version for parallel text lookup
+        std::wstring eng_rev_w = ToWstring(eng_rev);
+        std::wstring chs_w = ToWstring(chs);
+        eng2chs_content_w[std::make_pair(eng_rev_w, id)] = chs_w;
+        eng2chs_content_w[std::make_pair(eng_rev_w, -999)] = chs_w;
+        chs2eng_content_w[std::make_pair(chs_w, id)] = eng_rev_w;
+        chs2eng_content_w[std::make_pair(chs_w, -999)] = eng_rev_w;
+
         num_entries++;
         //printf("[%s]->[%s], [%s]->[%s]\n", char_eng.c_str(), char_chs.c_str(), eng_rev.c_str(), chs.c_str());
+
+        if (use_alignment) {
+          A3Info* e2c = GetNextEntryFromAlignmentFile(&f_alignment_e2c);
+          A3Info* c2e = GetNextEntryFromAlignmentFile(&f_alignment_c2e);
+          tran_alignment_e2c[ToWstring(eng_rev)] = e2c;
+          tran_alignment_c2e[ToWstring(chs)] = c2e;
+          if (e2c) e2c->target_text = chs_w;
+          if (c2e) c2e->target_text = eng_rev_w;
+        }
       }
     }
     f.close();
   }
   printf("%d entries in parallel text [%s] scanned\n", num_entries, fn);
-  #endif
 }
 
 void ClosedCaption::LoadEngChsParallelTextFromMemory(const char* ptr, int len) {
@@ -1037,7 +1209,9 @@ void ClosedCaption::OnMouseLeftUp(int mx, int my) {
 void ClosedCaption::UpdateMousePos(int mx, int my) {
 
   RECT bb;
-  int ch_idx = FindTextIdxByMousePos(mx, my, &bb);
+  int ch_idx = -999;
+  if (IsVisible() && !IsInGameMenu())
+    ch_idx = FindTextIdxByMousePos(mx, my, &bb);
 #if 0
   printf("[UpdateMousePos] x=%d y=%d ch_idx=%d pns:", x, y, ch_idx);
   for (std::pair<int, int> p : proper_noun_ranges) {
@@ -1045,6 +1219,7 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
   }
   printf("\n");
 #endif
+  // Locating PNL entries
   if (ch_idx != -999 && (ch_idx != last_highlight_idx)) {
     std::wstring popup_txt = L"";
     // Any substring found in the list?
@@ -1087,6 +1262,18 @@ void ClosedCaption::UpdateMousePos(int mx, int my) {
     highlighted_range.first = -999;
     highlighted_range.second = 0;
     g_hover_messagebox->Hide();
+  }
+
+  // Locating alignment split words
+  A3Info* a3 = curr_a3info; // To avoid data race
+  curr_a3_highlight_idx = -999;
+  highlighted_range_align = { -999, -999 };
+  if (ch_idx != -999 && a3 != nullptr) {
+    for (std::map<std::pair<int, int>, int >::iterator itr = range_to_align_splits.begin(); itr != range_to_align_splits.end(); itr++) {
+      if (itr->first.first <= ch_idx && itr->first.second >= ch_idx) {
+        curr_a3_highlight_idx = itr->second;
+      }
+    }
   }
 
   is_hovered = IsMouseHover(mx, my);
@@ -1387,4 +1574,242 @@ float VideoSubtitles::GetCurrOpacity() {
     return opacity;
   }
   return 0.0f;
+}
+
+// key should be string with no spaces
+void ClosedCaption::LoadA3AlignmentData(const char* fn) {
+  std::ifstream f(fn);
+
+  int num_sentences = 0;
+  bool is_target_lang = true;
+
+  if (f.good()) {
+    while (f.good()) {
+      std::string line, x;
+      std::getline(f, line);
+
+      // MBS -> WCS
+      int len_line = MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, NULL, NULL);
+      wchar_t* w = new wchar_t[len_line];
+      MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, w, len_line);
+      std::wstring wline = w;
+
+      // For every line
+      std::vector<std::wstring> tgt;
+      std::map<std::wstring, std::vector<int> > align;
+
+      if (w[0] == L'#') continue;
+      else {
+        if (is_target_lang) {
+          tgt = MySplitWstring(wline, L' ');
+          num_sentences++;
+        }
+        else {
+          std::vector<std::wstring> tokens = MySplitWstring(wline, L' ');
+          int i = 0;
+          while (i < int(tokens.size())) {
+            std::wstring term = tokens[i]; i++;
+            if (tokens[i] == L"({") {
+              i++;
+              while (tokens[i] != L"})") {
+                int x;
+                if (1 == swscanf_s(tokens[i].c_str(), L"%d", &x)) {
+                  align[term].push_back(x);
+                  i++;
+                }
+                else break;
+
+                if (i >= int(tokens.size())) break;
+              }
+              i++;
+            }
+          }
+        }
+        is_target_lang = !is_target_lang;
+
+        if (is_target_lang) {
+
+        }
+      }
+
+      delete w;
+    }
+    f.close();
+  }
+
+  printf("[LoadA3AlignmentData] %d sentences loaded\n", num_sentences);
+}
+
+std::wstring A3Info::GetKey(const std::wstring& text) {
+  std::wstring ret;
+  for (wchar_t c : text) {
+    if (c != L' ') ret.push_back(c);
+  }
+  return ret;
+}
+
+std::wstring A3Info::Unescape(const std::wstring& x) {
+  if (x == L"&apos;") return L"\'";
+  return x;
+}
+
+bool ClosedCaption::FindA3Alignment(const std::wstring& disp_txt) {
+  bool ret = false;
+  curr_a3info = nullptr;
+
+  std::wstring txt = disp_txt;
+
+  std::wstring ch_txt = L""; // Corresponding CHS text
+
+  // Assuming orig_txt is in ENG, look for CHS text
+  std::pair<std::wstring, int> key1 = { txt, curr_story_idx };
+  std::pair<std::wstring, int> key2 = { txt, -999 };
+
+  // Reverse lookup (only for testing)
+  if (chs2eng_content_w.find(key1) != chs2eng_content_w.end()) {
+    ch_txt = txt;
+    txt = chs2eng_content_w[key1];
+  }
+  else {
+    if (chs2eng_content_w.find(key2) != chs2eng_content_w.end()) {
+      ch_txt = txt;
+      txt = chs2eng_content_w[key2];
+    }
+  }
+
+
+  if (eng2chs_content_w.find(key1) != eng2chs_content_w.end()) {
+    ch_txt = eng2chs_content_w[key1];
+  }
+  else {
+    if (eng2chs_content_w.find(key2) != eng2chs_content_w.end()) {
+      ch_txt = eng2chs_content_w[key2];
+    }
+  }
+
+  bool e2c_found = false, c2e_found = false;
+  if (tran_alignment_e2c.find(txt) != tran_alignment_e2c.end()) e2c_found = true;
+  if (tran_alignment_c2e.find(ch_txt) != tran_alignment_c2e.end()) c2e_found = true;
+
+  wprintf(L">>>> [FindA3Alignment] txt=[%ls], ch_txt=[%ls], E2CFound=%d, C2EFound=%d\n", txt.c_str(), ch_txt.c_str(), e2c_found, c2e_found);
+  
+  if (c2e_found) {
+    SetCurrA3Info(tran_alignment_c2e[ch_txt]);
+    MarkChsEngTranslationAlignments(curr_a3info);
+    ret = true;
+  }
+  else {
+    SetCurrA3Info(nullptr);
+  }
+
+  return ret;
+}
+
+void ClosedCaption::SetCurrA3Info(A3Info* curr_a3info) {
+  this->curr_a3info = curr_a3info;
+  if (curr_a3info) {
+    curr_a3_layout_linecount = do_drawA3Info(nullptr, false);
+  }
+  else {
+    curr_a3_layout_linecount = 0;
+  }
+}
+
+// If is_render == false just return number of lines
+int ClosedCaption::do_drawA3Info(RECT *prect, bool is_render) {
+  RECT rect = { 0,0,0,0 };
+  if (prect) rect = *prect;
+
+  float o = GetOpacity();
+  D3DCOLOR bkcolor = D3DCOLOR_ARGB(int(128 * o), 102, 52, 35), bordercolor = D3DCOLOR_ARGB(int(255 * o), 255, 255, 192);
+
+  const int y_pad = int(5 * g_ui_scale_factor);
+  const int w = this->GetVisibleWidth(), h = int(FONT_SIZE * g_ui_scale_factor) * curr_a3_layout_linecount;
+  int x = rect.left, y = y_pad + this->GetVisibleHeight(), orig_x = x;
+  if (is_render) DrawBorderedRectangle(x, y, w, h, bkcolor, bordercolor);
+
+  std::vector<int> occs;
+  if (is_render && 
+    curr_a3_highlight_idx >= 0 &&
+    curr_a3_highlight_idx < int(curr_a3info->alignment.size())) occs = curr_a3info->alignment.at(curr_a3_highlight_idx).second;
+
+  int oidx = 0;
+  std::vector<std::wstring> tgt = curr_a3info->target_text_split;
+  std::wstring tgt_text = curr_a3info->target_text;
+
+  int i0 = 0, i0_prev = 0; // Index to original text
+  std::wstring last_needle = L"";
+  int line_count = 1;
+  for (int i = 0; i<int(tgt.size()); i++) {
+
+    std::wstring needle = A3Info::Unescape(tgt[i]);
+    const int N = int(needle.size());
+
+    if (i > 0) {
+      const int SPACE_PIXEL_SIZE = int(4 * g_ui_scale_factor);
+      // Add spaces since last word
+      while ((i0 < tgt_text.size() - N) && (tgt_text.substr(i0, N) != needle)) i0++;
+      int spc = (i0 - (i0_prev + last_needle.size()));
+      spc = max(spc, 0);
+      x += spc * SPACE_PIXEL_SIZE;
+      i0_prev = i0;
+    }
+    i0 += N;
+
+    D3DCOLOR c = D3DCOLOR_ARGB(255, 255, 255, 255);
+    if (oidx < int(occs.size()) && occs[oidx] == i + 1) {
+      oidx++;
+      c = D3DCOLOR_ARGB(255, 32, 255, 32);
+    }
+    else {
+    }
+
+    std::wstring temp = needle;
+
+    // Draw word-for-word
+    RECT tmp;
+    g_font->DrawTextW(0, temp.c_str(), temp.size(), &tmp, DT_CALCRECT, c);
+    if (tmp.right - tmp.left + x - orig_x >= w) {
+      x = orig_x;
+      y += FONT_SIZE * g_ui_scale_factor;
+      line_count++;
+    }
+    RECT r = { x, y, x + 512, y + 48 };
+    if (is_render)
+      g_font->DrawTextW(0, temp.c_str(), temp.size(), &r, DT_NOCLIP, c);
+    x += tmp.right - tmp.left;
+
+    last_needle = needle;
+  }
+  return line_count;
+}
+
+// To be used as SetAudio() in cll1.cpp
+void ClosedCaption::test_SetAudioIDWithParallelText(int id, bool is_eng) {
+  std::string who, content;
+  std::map<std::pair<std::string, int>, std::string> *content_dict = nullptr, *who_dict = nullptr;
+  if (is_eng) {
+    content_dict = &eng2chs_content;
+    who_dict = &eng2chs_who;
+  }
+  else {
+    // TODO: define chs2eng_content (not WCHAR)
+  }
+
+  if (content_dict) {
+    for (const std::pair<std::pair<std::string, int>, std::string>& p : *content_dict) {
+      if (p.first.second == id) {
+        content = p.first.first; break;
+      }
+    }
+  }
+  if (who_dict) {
+    for (const std::pair<std::pair<std::string, int>, std::string>& p : *who_dict) {
+      if (p.first.second == id) {
+        who = p.first.first; break;
+      }
+    }
+  }
+
+  OnFuncTalk(who.c_str(), content.c_str());
 }

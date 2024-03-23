@@ -36,10 +36,19 @@ struct CustomVertex {
   DWORD color;
 };
 
+// 一句话
+class A3Info { // Info contained in A3 files
+public:
+  std::wstring target_text;
+  std::vector<std::wstring> target_text_split;
+  std::vector<std::pair<std::wstring, std::vector<int> > > alignment;
+  static std::wstring GetKey(const std::wstring& text);
+  static std::wstring Unescape(const std::wstring& x);
+};
+
 class ClosedCaption {
   public:
 
-    static std::string alignment_path;
     bool dialog_box_gone_when_fadingout;
 
     enum CaptionPlaybackState {
@@ -56,12 +65,6 @@ class ClosedCaption {
     ClosedCaption();
     static int PADDING_LEFT, PADDING_TOP, MOUSE_Y_DELTA;
     static int FADE_IN_MILLIS, FADE_OUT_MILLIS;
-
-    static void SetAlignmentPath() {
-      char user_directory[233];
-      GetEnvironmentVariableA("USERPROFILE", user_directory, 233);
-      alignment_path = std::string(user_directory) + std::string("\\Downloads\\GuJian Resources\\");
-    }
 
     int curr_story_idx;
     int font_size;
@@ -104,7 +107,7 @@ class ClosedCaption {
     void LoadSeqDlgIndexFromMemory(void* ptr, int len);
 
     // CSV分隔，[ID, Char_CHS, CHS, Char_ENG, ENG_Rev]
-    void LoadEngChsParallelText(const char* fn);
+    void LoadEngChsParallelText(const char* fn, const char* alignment_fn_e2c, const char* alignment_fn_c2e);
 
     void LoadEngChsParallelTextFromMemory(const char* ptr, int len);
 
@@ -112,16 +115,25 @@ class ClosedCaption {
 
     void LoadProperNamesListFromMemory(const char* ptr, int len);
 
+    void LoadA3AlignmentData(const char* fn);
+
     void OnFuncTalk(const char* who, const char* content);
 
     // Returns status code
     int SetAlignmentFileByAudioID(int id);
 
+    // Sets speaker and content by ID
+    void test_SetAudioIDWithParallelText(int id, bool x);
+
     int GuessNextAudioID(int id);
 
     std::wstring GetCurrLine();
 
-    std::wstring GetFullLine();
+    std::wstring curr_orig_text;
+    std::wstring GetCurrOrigText() { return curr_orig_text; }
+    void SetCurrOrigText(std::wstring x) { curr_orig_text = x; }
+
+    std::wstring GetFullLine(bool ignore_speaker = false);
 
     // Line: "aaaaaaaaaaaaaaaaaaaaaa"
     //
@@ -138,11 +150,23 @@ class ClosedCaption {
 
     void Update();
 
+    // For showing highlighted words
     // (idx, length)
     std::pair<int, int> highlighted_range;
     int last_highlight_idx;
     std::map<std::pair<float, float>, std::wstring> millis2word;
     std::set<std::pair<int, int> > proper_noun_ranges;
+
+    // For showing alignment
+    std::map<std::pair<int, int>, int> range_to_align_splits;
+    
+    A3Info* curr_a3info;
+    int curr_a3_layout_linecount;
+    void SetCurrA3Info(A3Info* curr_a3info);
+    int do_drawA3Info(RECT* rect, bool is_render);
+
+    std::pair<int, int> highlighted_range_align;
+    int curr_a3_highlight_idx;
 
     void LoadDummy(const wchar_t* msg);
 
@@ -154,13 +178,18 @@ class ClosedCaption {
 
     void UpdateDrag(int mx, int my);
 
+    // The following 2 functions are similar
     void FindKeywordsForHighlighting();
+    void MarkChsEngTranslationAlignments(A3Info* info);
 
     void do_FindKeywordsForHighlighting(std::wstring work);
+
+    bool FindA3Alignment(const std::wstring& orig_text);
 
     void Clear() {
       proper_noun_ranges.clear();
       millis2word.clear();
+      range_to_align_splits.clear();
     }
 
     void Hover();
@@ -201,9 +230,14 @@ class ClosedCaption {
     // (English Text, IDX) -> (Original Text)
     std::map<std::pair<std::string, int>, std::string> eng2chs_who;
     std::map<std::pair<std::string, int>, std::string> eng2chs_content;
+    std::map<std::pair<std::wstring, int>, std::wstring> eng2chs_content_w;
+    std::map<std::pair<std::wstring, int>, std::wstring> chs2eng_content_w; // For debugging only
 
-    // 高亮显示的专用名词
+    // 高亮显示专用名词
     std::map<std::wstring, std::wstring> proper_names;
+
+    // 翻译对齐
+    std::map<std::wstring, A3Info*> tran_alignment_c2e, tran_alignment_e2c;
 
     std::wstring sentence, speaker;
     int line_width;
@@ -213,6 +247,12 @@ class ClosedCaption {
     long long fade_end_millis, fade_duration;
     CaptionPlaybackState caption_state;
     bool is_hovered, is_dragging, is_debug;
+    long long maybe_gone_suppress_until; // Suppresses "maybe-gone" detection until this time
+    bool IsMaybeGoneSuppressed() { return MillisecondsNow() < maybe_gone_suppress_until; }
+    void SuppressMaybeGone(int millis) {
+      if (millis < 0) maybe_gone_suppress_until = 0;
+      else maybe_gone_suppress_until = MillisecondsNow() + millis;
+    }
 
     std::set<int> all_story_ids;
 

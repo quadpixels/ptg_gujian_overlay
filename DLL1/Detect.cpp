@@ -160,6 +160,9 @@ float g_canny_thresh1 = 100.0f, g_canny_thresh2 = 200.0f;
 cv::Size g_boxfilter_size = cv::Size(4, 4);
 
 int g_last_scene_id = -999;
+bool IsInGameMenu() {
+  return g_last_scene_id == 2;
+}
 
 MyHistogram<std::pair<float, float> >* g_edgedetect_hist;
 
@@ -170,7 +173,7 @@ void SetLastSceneId(int x) {
   }
 }
 
-bool g_dialog_box_gone = false;
+bool g_dialog_box_gone = true;
 std::map<std::pair<int, int>, RECT > DIALOG_BOX_COORDS =
 {
   { { 1024, 720 }, { 173, 529, 812, 643 } },
