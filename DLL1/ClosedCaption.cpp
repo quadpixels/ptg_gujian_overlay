@@ -717,7 +717,8 @@ void ClosedCaption::OnFuncTalk(const char* who_original, const char* content) {
   int ret = FindAlignmentFile(who1.c_str(), content1.c_str());
 
   if (ret == -999 || ret == -998) {
-    millis2word.clear();
+    if (ret == -999)
+      millis2word.clear();
     //millis2word[std::make_pair(0.0f, 0.0f)] = RemoveEscapeSequence(w);
     printf("[ClosedCaption] alignment file not found or is not okay. length=%lu\n", w.size());
     caption_state = CAPTION_PLAYING_NO_TIMELINE;
