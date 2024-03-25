@@ -49,7 +49,12 @@ void getFiles(CString directory, bool preserve_folder_name = false) {
 PtgOverlayConfig g_config;
 
 int main(int argc, char** argv) {
-  g_config.Load();
+  if (argc < 2)
+    g_config.Load();
+  else {
+    g_config.root_path = std::string(argv[1]);
+    printf("Root path overrode to %s\n", g_config.root_path.c_str());
+  }
 
   printf("Select operation mode:\n");
   printf(" 1) inverted index\n");

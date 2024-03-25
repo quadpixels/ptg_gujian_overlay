@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Request>
+  <Select Columns="DZ00,DZ04,DZ05,FCO3" From="SeqDlgQ15" />
+</Request>
