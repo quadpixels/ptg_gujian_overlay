@@ -446,7 +446,8 @@ void ClosedCaption::Update() {
       this->FadeIn();
     }
     else {
-      this->FadeOut();
+      if (!is_hovered)
+        this->FadeOut();
     }
   }
 
@@ -531,8 +532,9 @@ void ClosedCaption::Draw() {
     // Draw full text
     msg = g_header1 + s[i];
     D3DCOLOR color;
-    if (maybe_gone) color = D3DCOLOR_ARGB(int(160 * o), 192, 192, 192);
-    else color = D3DCOLOR_ARGB(int(224 * o), 192, 192, 192);
+    if (maybe_gone) color = D3DCOLOR_ARGB(int(255 * o), 255, 255, 255);
+    else 
+    color = D3DCOLOR_ARGB(int(224 * o), 192, 192, 192);
     // Only draw on line[0]
     g_font->DrawTextW(0, msg.c_str(), msg.size(), &rect, DT_NOCLIP, color);
 
@@ -719,6 +721,10 @@ void ClosedCaption::OnFuncTalk(const char* who_original, const char* content) {
   if (ret == -999 || ret == -998) {
     if (ret == -999)
       millis2word.clear();
+    else {
+      millis2word.clear();
+      millis2word[std::make_pair(0, 0)] = g_converter.from_bytes(content1);
+    }
     //millis2word[std::make_pair(0.0f, 0.0f)] = RemoveEscapeSequence(w);
     printf("[ClosedCaption] alignment file not found or is not okay. length=%lu\n", w.size());
     caption_state = CAPTION_PLAYING_NO_TIMELINE;
