@@ -91,7 +91,8 @@ void LoadTexture() {
       std::getline(f, line);
 
       // Lazy load
-      g_texture_paths.push_back(line);
+      g_texture_paths.push_back(g_config.root_path + "\\" + line);
+      if (line.empty()) continue;
 
       int idx1 = int(line.size() - 1), w, h;
       while (line[idx1] != '.' && (idx1 - 1 >= 0)) {

@@ -16,7 +16,7 @@ struct PtgOverlayConfig {
       printf("[PtgOverlayConfig::Load] Current directory: %s\n", path);
     }
 
-    std::ifstream c("../ptg_overlay.conf");
+    std::ifstream c("ptg_overlay.conf");
     if (c.good()) {
       while (c.good()) {
         std::string line;
